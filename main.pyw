@@ -2,6 +2,7 @@ import sys
 from pathlib import Path
 
 from src.app_identity import APP_USER_MODEL_ID, register_app_identity
+from src.config_handler import user_config_path
 from src.icon_generator import IconGenerator
 from src.single_instance import claim_single_instance, show_message
 from src.ticker_icon import TickerIcon
@@ -9,9 +10,12 @@ from src.trust_store import use_windows_trust_store
 
 
 def _resolve_config_path() -> str:
-    """Locates config.cfg next to the executable (frozen) or this script (dev)."""
+    """
+    Locates the user's config.cfg in the app data folder, first copied from
+    the one next to the executable (frozen) or this script (dev).
+    """
     base_dir = Path(sys.executable).parent if getattr(sys, 'frozen', False) else Path(__file__).parent
-    return str(base_dir / "config.cfg")
+    return str(user_config_path(base_dir / "config.cfg"))
 
 
 if __name__ == "__main__":

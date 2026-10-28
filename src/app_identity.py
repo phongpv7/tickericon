@@ -1,4 +1,5 @@
 import ctypes
+import os
 import sys
 from pathlib import Path
 
@@ -6,6 +7,16 @@ from pathlib import Path
 # registered display name and icon instead of the host executable's ("Python")
 APP_USER_MODEL_ID = 'phongpv7.TickerIcon'
 APP_DISPLAY_NAME = 'TickerIcon'
+
+
+def app_data_dir() -> Path:
+    """
+    Returns:
+        Path: The per-user folder TickerIcon keeps its own files in, such as
+            its settings and CA bundle, apart from the program itself; it may
+            not exist yet.
+    """
+    return Path(os.environ.get('LOCALAPPDATA') or os.path.expanduser('~')) / 'TickerIcon'
 
 
 def register_app_identity(icon_path: Path) -> None:

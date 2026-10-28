@@ -5,6 +5,8 @@ from typing import List, Optional
 
 import certifi
 
+from src.app_identity import app_data_dir
+
 # Environment variables curl_cffi, the HTTP and websocket client, reads its CA bundle path from.
 CA_BUNDLE_ENV_VARS = ('SSL_CERT_FILE', 'CURL_CA_BUNDLE', 'REQUESTS_CA_BUNDLE')
 
@@ -17,8 +19,7 @@ def _default_bundle_path() -> Path:
     Returns:
         Path: Per-user location of the generated CA bundle.
     """
-    base_dir = os.environ.get('LOCALAPPDATA') or os.path.expanduser('~')
-    return Path(base_dir) / 'TickerIcon' / 'ca-bundle.pem'
+    return app_data_dir() / 'ca-bundle.pem'
 
 
 def _windows_store_pems() -> List[str]:

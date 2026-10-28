@@ -47,7 +47,7 @@ TickerIcon runs silently in the background. Prices appear on the taskbar just le
 
 ### Symbols
 
-Edit the two watchlists in **Settings → Symbols** (or in `config.cfg`), comma separated, up to twenty symbols in all:
+Edit the two watchlists in **Settings → Symbols** (or in `config.cfg`; see [Settings](#settings) for where it lives), comma separated, up to twenty symbols in all:
 
 * **International** (`TICKER_INTERNATIONAL=`): each asset by its Binance name. Crypto such as `BTC` or `ETH` comes from Binance's spot market. Gold `XAU`, silver `XAG`, platinum `XPT`, palladium `XPD`, `COPPER`, WTI crude `CL`, Brent crude `BZ`, `NATGAS`, and stocks and ETFs such as `AAPL`, `TSLA`, or `SPY` come from its perpetual futures, which trade around the clock, even while their home markets are closed. Prices are converted from USDT to US dollars at Binance's USDC/USDT rate.
 * **Vietnam** (`TICKER_VIETNAM=`): just the stock code, e.g. `VHM` or `SHS`.
@@ -86,6 +86,8 @@ The **Settings** window is organized into four tabs, with Save and Cancel below 
 With the taskbar widget turned off, the prices go back into the tray icon itself, either one symbol at a time or as a continuously scrolling ticker.
 
 After you save your changes, TickerIcon reloads the configuration automatically. Configuration files from older versions are read transparently and upgraded to the new format on the next save.
+
+The settings are kept in `%LOCALAPPDATA%\TickerIcon\config.cfg`, apart from the program, so reinstalling or uninstalling TickerIcon (or deleting a source checkout) keeps them. On its first run, TickerIcon copies the `config.cfg` that ships next to the program there; settings that older versions saved next to the program carry over the same way.
 
 ## Running on Startup
 Choose **Start TickerIcon when I sign in to Windows** during installation if you want it to launch automatically at sign-in. If you skipped that option, run the latest installer again and enable the startup option.

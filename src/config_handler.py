@@ -1,6 +1,9 @@
 import configparser
+import shutil
+from pathlib import Path
 from typing import Dict, List, Tuple, TypedDict
 
+from src.app_identity import app_data_dir
 from src.vn_market import VN_SUFFIX, is_vn_symbol, vn_symbol
 from src.world_market import base_asset
 
@@ -47,6 +50,31 @@ DEFAULT_BAND_COLORS: Dict[str, RGB] = {
     'reference': (245, 197, 24),  # yellow
     'floor': (59, 163, 255),      # blue
 }
+
+
+def user_config_path(bundled: Path) -> Path:
+    """
+    Locates the user's own config.cfg in the per-user app data folder, apart
+    from the program, so reinstalling or uninstalling TickerIcon, or deleting
+    a source checkout, never loses the settings. On first use it starts as a
+    copy of the config.cfg shipped next to the program, which also carries
+    over the settings older versions saved there.
+
+    Args:
+        bundled (Path): The config.cfg next to the executable or main.pyw.
+
+    Returns:
+        Path: The config file to load and save; the bundled one itself when
+            the app data folder can't be written.
+    """
+    path = app_data_dir() / 'config.cfg'
+    if not path.exists():
+        try:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copyfile(bundled, path)
+        except OSError:
+            return bundled
+    return path
 
 
 def display_name(symbol: str, names: Dict[str, str]) -> str:
