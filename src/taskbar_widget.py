@@ -1,6 +1,7 @@
 import ctypes
 import sys
 import threading
+import time
 from typing import Callable, List, Optional, Tuple
 
 try:
@@ -48,7 +49,11 @@ FONT_FAMILY = 'Segoe UI'
 FONT_SIZE_PT = 14
 
 # How often the widget redraws, follows the taskbar, and re-asserts topmost
-REFRESH_MS = 500
+REFRESH_MS = 250
+
+# How often the taskbar color behind the text is sampled: reading a screen
+# pixel waits on the compositor (~20 ms), too slow for every refresh
+KEY_COLOR_INTERVAL_S = 1.0
 
 # Pixels between the widget and the notification area, and between text runs
 TRAY_GAP = 8
@@ -143,6 +148,7 @@ class TaskbarWidget:
         self._width = 1
         self._geometry = None
         self._key_color = None
+        self._key_color_at = float('-inf')
         self._visible = False
 
     @staticmethod
@@ -199,12 +205,14 @@ class TaskbarWidget:
         # The background takes the taskbar's own color (sampled in the gap
         # next to the tray) and is keyed out, so anti-aliased text edges blend
         # into the taskbar instead of a mismatched color.
-        key_color = _screen_color(tray_left - TRAY_GAP // 2, (top + bottom) // 2) or self._key_color or '#000000'
-        if key_color != self._key_color:
-            self._key_color = key_color
-            self._canvas.configure(bg=key_color)
-            self._root.attributes('-transparentcolor', key_color)
-            self._drawn = None  # redraw so text anti-aliases against the new color
+        if time.monotonic() - self._key_color_at >= KEY_COLOR_INTERVAL_S:
+            self._key_color_at = time.monotonic()
+            key_color = _screen_color(tray_left - TRAY_GAP // 2, (top + bottom) // 2) or self._key_color or '#000000'
+            if key_color != self._key_color:
+                self._key_color = key_color
+                self._canvas.configure(bg=key_color)
+                self._root.attributes('-transparentcolor', key_color)
+                self._drawn = None  # redraw so text anti-aliases against the new color
 
         height = bottom - top
         if segments != self._drawn:

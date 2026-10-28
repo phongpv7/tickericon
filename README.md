@@ -4,13 +4,16 @@
 [![License: MIT](https://img.shields.io/github/license/phongpv7/tickericon)](LICENSE)
 
 A lightweight Windows app that shows market prices as text right on the taskbar, next to the tray icons, rotating through your watchlist.
-Vietnamese stocks update in realtime from the VPS price board; crypto, commodities, and other markets come from Yahoo Finance.
+Prices update in realtime: Vietnamese stocks from the VPS price board, crypto from Binance, and gold, oil, and other commodities from Hyperliquid. Other markets come from Yahoo Finance.
 
 ## Features
 * **Taskbar widget:** Each symbol shows its name, price, and daily change (e.g. `VHM 63.5 +0.79%`) in a normal-size font on a transparent background, then rotates to the next symbol. The widget hides while a full-screen app is running.
 * **Vietnamese price board colors:** Ceiling (purple), up (green), reference (yellow), down (red), and floor (blue), with prices in thousands of VND like on local price boards. A price that failed to refresh turns gray.
-* **Realtime Vietnamese stocks:** Symbols ending in `.VN` (HOSE, HNX, and UPCoM stocks) refresh every 5 seconds during trading sessions, all in a single request.
-* **Any Yahoo Finance symbol:** Crypto (`BTC-USD`), commodities (`GC=F` gold, `BZ=F` Brent crude), and global stocks refresh once a minute. Yahoo delays some markets' quotes, e.g. 10 minutes for futures.
+* **Realtime Vietnamese stocks:** Symbols ending in `.VN` (HOSE, HNX, and UPCoM stocks) refresh every second during trading sessions, all in a single request.
+* **Realtime crypto:** Crypto symbols such as `BTC-USD` stream from Binance trade by trade, with the daily change measured from midnight Vietnam time. Coins Binance doesn't list fall back to Yahoo Finance.
+* **Realtime commodities:** Gold (`GC=F`), silver (`SI=F`), copper (`HG=F`), platinum (`PL=F`), palladium (`PA=F`), WTI crude (`CL=F`), Brent crude (`BZ=F`), natural gas (`NG=F`), and heating oil (`HO=F`) stream from Hyperliquid's oracle prices, which follow the underlying markets, with the change over the last 24 hours. They fall back to Yahoo Finance while Hyperliquid is unreachable.
+* **Any Yahoo Finance symbol:** Global stocks, indices, other futures, and more refresh once a minute. Yahoo delays some markets' quotes, e.g. 10 minutes for futures.
+* **Fast updates:** The taskbar widget picks up new prices four times a second.
 * **Display names:** Label any symbol, e.g. `GC=F:Gold`.
 * **Price alerts:** A Windows notification when a symbol reaches a target price, e.g. `VHM>=65`.
 * **Detailed tooltips:** Hover over the tray icon to see the shown symbol's exchange, market state, price, change, and day high and low.
@@ -49,7 +52,7 @@ TickerIcon runs silently in the background. Prices appear on the taskbar just le
 Edit the watchlist in **Settings → Symbols** (or `TICKER=` in `config.cfg`), comma separated, up to twenty symbols:
 
 * Vietnamese stocks: the stock code plus `.VN`, e.g. `VHM.VN` or `SHS.VN`.
-* Anything else: its Yahoo Finance symbol, e.g. `BTC-USD`, `GC=F`, or `AAPL`.
+* Anything else: its Yahoo Finance symbol, e.g. `BTC-USD` (served by Binance), `GC=F` (served by Hyperliquid), or `AAPL`.
 * Add `:Name` after a symbol to label it: `BTC-USD:BTC, BZ=F:Brent, GC=F:Gold, VHM.VN`.
 
 ### Price Alerts

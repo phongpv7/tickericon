@@ -6,12 +6,15 @@ from zoneinfo import ZoneInfo
 
 import yfinance as yf
 
-from src import vn_market
+from src import commodity_market, crypto_market, vn_market
 
-# Seconds between fetches while a market is open: Yahoo Finance quotes come
-# from 1-minute bars, while the realtime price board can be polled every few seconds
+# Seconds between fetches while a market is open. Yahoo Finance quotes come
+# from 1-minute bars, and the Vietnamese price board is polled every second
+# during sessions; Binance and Hyperliquid prices stream in continuously, so
+# every fetch picks up their latest values without a request
 FETCH_INTERVAL_S = 60
-REALTIME_FETCH_INTERVAL_S = 5
+PRICE_BOARD_INTERVAL_S = 1
+REALTIME_FETCH_INTERVAL_S = 0.25
 
 # Maps Yahoo Finance exchange codes to human-friendly names for the tooltip.
 # Falls back to the metadata's own "fullExchangeName" when a code is unknown.
@@ -82,7 +85,9 @@ class MarketAPI:
     resolves each ticker's own market session state from its exchange's
     trading hours, so symbols from different markets/timezones are all
     handled correctly. Vietnamese '.VN' symbols, which Yahoo delays by 15
-    minutes, come from a realtime local price board instead.
+    minutes, come from a realtime local price board instead, crypto symbols
+    such as 'BTC-USD' from Binance, and commodity futures such as 'GC=F'
+    (delayed by 10 minutes) from Hyperliquid.
     """
 
     def __init__(self, ticker_symbols: List[str]):
@@ -92,17 +97,38 @@ class MarketAPI:
         """
         self.ticker_symbols = ticker_symbols
         self.price_board = vn_market.PriceBoard()
-        # When each Yahoo Finance symbol was last fetched (time.monotonic())
+        self.crypto_ticker = crypto_market.CryptoTicker()
+        self.commodity_ticker = commodity_market.CommodityTicker()
+        # When each Yahoo Finance symbol, and the price board, were last fetched (time.monotonic())
         self._fetched_at: Dict[str, float] = {}
+        self._price_board_fetched_at = float('-inf')
 
     @property
     def realtime(self) -> bool:
         """
         Returns:
-            bool: True when every tracked symbol comes from the realtime
-                price board, which can be polled every few seconds.
+            bool: True when every tracked symbol comes from a realtime source
+                (the price board, Binance, or Hyperliquid), refreshed every
+                second or faster.
         """
-        return bool(self.ticker_symbols) and all(vn_market.is_vn_symbol(s) for s in self.ticker_symbols)
+        return bool(self.ticker_symbols) and all(self._is_realtime_symbol(s) for s in self.ticker_symbols)
+
+    @staticmethod
+    def _is_realtime_symbol(symbol: str) -> bool:
+        """
+        Args:
+            symbol (str): A tracked ticker symbol.
+
+        Returns:
+            bool: True for symbols served by a realtime source.
+        """
+        return (vn_market.is_vn_symbol(symbol) or crypto_market.is_crypto_symbol(symbol)
+                or commodity_market.is_commodity_symbol(symbol))
+
+    def close(self) -> None:
+        """Stops the realtime price streams; call before dropping this instance."""
+        self.crypto_ticker.close()
+        self.commodity_ticker.close()
 
     def fetch_all(self, previous: Optional[Dict[str, StockData]] = None,
                   force: bool = False) -> Dict[str, StockData]:
@@ -111,38 +137,70 @@ class MarketAPI:
 
         Note: yfinance has no batch quote endpoint, so this issues one
         request per ticker (sequentially, to avoid hammering Yahoo Finance);
-        all '.VN' symbols share a single price board request. Yahoo Finance
-        symbols are fetched at most once per FETCH_INTERVAL_S, keeping their
-        previous values in between, so a list mixing them with realtime
-        symbols can still be polled every few seconds.
+        all '.VN' symbols share a single price board request, while crypto
+        and commodity prices come from their streams, needing a request only
+        while a stream is down. Yahoo Finance symbols are fetched at most once
+        per FETCH_INTERVAL_S, and the price board at most once per
+        PRICE_BOARD_INTERVAL_S during its sessions (FETCH_INTERVAL_S outside
+        them), keeping their previous values in between, so a list mixing them
+        with streamed symbols can still be refreshed several times a second.
 
         Args:
             previous (Optional[Dict[str, StockData]]): The last known snapshot;
                 a ticker whose fetch fails keeps its previous values (flagged
                 with has_error) instead of resetting to zeros.
-            force (bool): Refetch Yahoo Finance symbols even if fetched recently.
+            force (bool): Refetch every symbol even if fetched recently.
 
         Returns:
             Dict[str, StockData]: Latest data keyed by ticker symbol.
         """
         previous = previous or {}
-        vn_symbols = [s for s in self.ticker_symbols if vn_market.is_vn_symbol(s)]
-        vn_data = self._fetch_vn(vn_symbols, previous) if vn_symbols else {}
-
         now = time.monotonic()
-        snapshot = {}
-        for symbol in self.ticker_symbols:
-            if symbol in vn_data:
-                snapshot[symbol] = vn_data[symbol]
-            elif (not force and symbol in previous
-                    and now - self._fetched_at.get(symbol, float('-inf')) < FETCH_INTERVAL_S):
-                snapshot[symbol] = previous[symbol]
-            else:
-                snapshot[symbol] = self._fetch_one(symbol, previous.get(symbol))
-                self._fetched_at[symbol] = now
-        return snapshot
+        fresh: Dict[str, StockData] = {}
 
-    def refresh_interval(self, snapshot: Dict[str, StockData]) -> int:
+        vn_symbols = [s for s in self.ticker_symbols if vn_market.is_vn_symbol(s)]
+        if vn_symbols and (force or self._price_board_due(now)):
+            fresh.update(self._fetch_vn(vn_symbols, previous))
+            self._price_board_fetched_at = now
+
+        for symbol in self.ticker_symbols:
+            if vn_market.is_vn_symbol(symbol):
+                continue
+            try:
+                if crypto_market.is_crypto_symbol(symbol):
+                    fresh[symbol] = self._fetch_crypto(symbol)
+                    continue
+                if commodity_market.is_commodity_symbol(symbol):
+                    fresh[symbol] = self._fetch_commodity(symbol)
+                    continue
+            except Exception:
+                pass  # not listed by the realtime source, or unreachable: fall back to Yahoo Finance
+            if force or now - self._fetched_at.get(symbol, float('-inf')) >= FETCH_INTERVAL_S:
+                fresh[symbol] = self._fetch_one(symbol, previous.get(symbol))
+                self._fetched_at[symbol] = now
+
+        # Symbols not refetched this time keep their previous values
+        return {
+            symbol: fresh[symbol] if symbol in fresh else previous.get(symbol, StockData(symbol=symbol))
+            for symbol in self.ticker_symbols
+        }
+
+    def _price_board_due(self, now: float) -> bool:
+        """
+        Args:
+            now (float): The current time.monotonic().
+
+        Returns:
+            bool: True when the price board should be polled: every
+                PRICE_BOARD_INTERVAL_S during a session, otherwise at most once
+                per FETCH_INTERVAL_S (streamed symbols keep the update loop
+                running around the clock).
+        """
+        in_session = vn_market.session_state(datetime.now(ZoneInfo("UTC"))) != 'closed'
+        interval = PRICE_BOARD_INTERVAL_S if in_session else FETCH_INTERVAL_S
+        return now - self._price_board_fetched_at >= interval
+
+    def refresh_interval(self, snapshot: Dict[str, StockData]) -> float:
         """
         Picks how long to wait before the next fetch while some market is open.
 
@@ -150,12 +208,69 @@ class MarketAPI:
             snapshot (Dict[str, StockData]): Latest fetched data per ticker.
 
         Returns:
-            int: REALTIME_FETCH_INTERVAL_S while a price board symbol is in
-                session, otherwise FETCH_INTERVAL_S.
+            float: REALTIME_FETCH_INTERVAL_S while a realtime symbol is
+                trading (crypto and commodities always are, Vietnamese stocks
+                during sessions), otherwise FETCH_INTERVAL_S.
         """
-        if any(vn_market.is_vn_symbol(symbol) and data.state != 'closed' for symbol, data in snapshot.items()):
+        if any(self._is_realtime_symbol(symbol) and data.state != 'closed' for symbol, data in snapshot.items()):
             return REALTIME_FETCH_INTERVAL_S
         return FETCH_INTERVAL_S
+
+    def _fetch_crypto(self, symbol: str) -> StockData:
+        """
+        Fetches a crypto symbol from Binance. Crypto trades around the
+        clock; its change is measured from midnight Vietnam time.
+
+        Args:
+            symbol (str): A crypto symbol, e.g. 'BTC-USD'.
+
+        Returns:
+            StockData: The parsed snapshot.
+
+        Raises:
+            Exception: When Binance can't provide the quote.
+        """
+        quote = self.crypto_ticker.fetch(symbol)
+        change_pct = (quote.price - quote.day_open) / quote.day_open * 100 if quote.day_open else 0.0
+        return StockData(
+            symbol=symbol,
+            price=quote.price,
+            change_pct=change_pct,
+            day_high=quote.day_high,
+            day_low=quote.day_low,
+            prev_close=quote.day_open,
+            state='open',
+            exchange='Binance',
+            currency='USD',
+        )
+
+    def _fetch_commodity(self, symbol: str) -> StockData:
+        """
+        Fetches a commodity future from Hyperliquid, whose contracts trade
+        around the clock; its change is measured over the last 24 hours.
+
+        Args:
+            symbol (str): A mapped futures symbol, e.g. 'GC=F'.
+
+        Returns:
+            StockData: The parsed snapshot.
+
+        Raises:
+            Exception: When Hyperliquid can't provide the quote.
+        """
+        quote = self.commodity_ticker.fetch(symbol)
+        change_pct = (quote.price - quote.prev_day) / quote.prev_day * 100 if quote.prev_day else 0.0
+        return StockData(
+            symbol=symbol,
+            price=quote.price,
+            change_pct=change_pct,
+            day_high=quote.day_high,
+            day_low=quote.day_low,
+            prev_close=quote.prev_day,
+            state='open',
+            exchange='Hyperliquid',
+            currency='USD',
+        )
 
     def _fetch_vn(self, symbols: List[str], previous: Dict[str, StockData]) -> Dict[str, StockData]:
         """

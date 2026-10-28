@@ -189,7 +189,7 @@ class TickerIcon:
             # menu is rebuilt after a settings save.
             pystray.MenuItem('Next Symbol', self.on_next_symbol, default=True,
                              visible=lambda item: self._cycles_symbols()),
-            # Realtime symbols refresh every few seconds anyway
+            # Realtime symbols refresh every second or faster anyway
             pystray.MenuItem('Refresh Now', self.on_refresh, visible=lambda item: not self.api.realtime),
             pystray.MenuItem('Symbols', pystray.Menu(self._symbol_menu_items),
                              visible=lambda item: len(self.config['tickers']) > 1),
@@ -353,6 +353,7 @@ class TickerIcon:
         """
         with self.lock:
             old_snapshot = self.snapshot
+            old_api = self.api
             self.config = config
             self.api = MarketAPI(self.config['tickers'])
             self.icon_gen = IconGenerator(self.config)
@@ -374,6 +375,8 @@ class TickerIcon:
             }
             if not self.enabled_symbols:
                 self.enabled_symbols = set(self.config['tickers'])
+        # The new instance opens its own price streams for the new symbols
+        old_api.close()
         self.display_dirty.set()
         self._sync_taskbar_widget()
 
