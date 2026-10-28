@@ -111,8 +111,10 @@ per-user installer. The installer uses the icon in
 `assets\tickericon.ico`, creates a Start Menu shortcut, and optionally adds
 the application to Windows startup.
 
-Publishing a GitHub Release runs the same Windows build automatically through
-`.github\workflows\release.yml`. The release receives
+Pushing a version tag such as `v1.0.0` runs the same Windows build
+automatically through `.github\workflows\release.yml` and publishes a GitHub
+Release for it, with the tag's annotation as the release notes (publishing a
+release by hand runs the build too). The release receives
 `TickerIcon-Setup.exe` as the one-file installer and `TickerIcon.zip` as the
 portable distribution.
 
