@@ -72,6 +72,7 @@ class StateColors(TypedDict):
 class AppConfig(TypedDict):
     tickers: List[str]
     names: Dict[str, str]
+    alerts: str
     bg_color: RGB
     transparent_background: bool
     error_color: RGB
@@ -259,6 +260,7 @@ class ConfigHandler:
         return AppConfig(
             tickers=tickers,
             names=names,
+            alerts=section.get("ALERTS", fallback="").strip(),
             bg_color=self._read_color(section, ("COLOR_BACKGROUND", "COLOR_CLOSED"), DEFAULT_BG_COLOR),
             transparent_background=section.getboolean("TRANSPARENT_BACKGROUND", fallback=False),
             error_color=self._read_color(section, ("COLOR_ERROR", "COLOR_ERROR_BORDER"), DEFAULT_ERROR_COLOR),
@@ -322,6 +324,10 @@ class ConfigHandler:
             "# every other symbol takes one per minute);",
             "# add :Name after a symbol to label it, e.g. GC=F:Gold",
             f"TICKER={self.format_tickers(tickers, config.get('names', {}))}",
+            "",
+            "# Price alerts: a Windows notification when a symbol reaches a price, comma separated,",
+            "# e.g. VHM>=65, BTC<=80000 (Vietnamese stocks in thousands of VND, as on the taskbar)",
+            f"ALERTS={config.get('alerts', '').strip()}",
             "",
             "# Static icon background color",
             f"COLOR_BACKGROUND={self._rgb_to_hex(config['bg_color'])}",

@@ -19,6 +19,7 @@ from src.config_handler import (
     PRICE_BANDS,
     TICKER_VALUE_MODES,
 )
+from src.alerts import parse_alerts
 
 # Uniform outer/section margin in pixels
 PADDING = 12
@@ -86,6 +87,7 @@ class ConfigWindow:
 
         self._build_general_section(container)
         self._build_symbols_section(container)
+        self._build_alerts_section(container)
         self._build_colors_section(container)
 
         actions = ttk.Frame(container)
@@ -189,6 +191,20 @@ class ConfigWindow:
         self.entries["tickers"].insert(0, ConfigHandler.format_tickers(
             self.config["tickers"], self.config.get("names", {}), separator=", "))
         self.entries["tickers"].pack(fill="x")
+
+    def _build_alerts_section(self, parent):
+        """Builds the Alerts section: price targets that raise a Windows notification.
+
+        Args:
+            parent (ttk.Frame): The container to add the section to.
+        """
+        section = self._build_section(
+            parent, "Alerts",
+            "Notify when a price reaches a target, e.g. VHM>=65, BTC<=80000 (Vietnamese stocks in thousands).",
+        )
+        self.entries["alerts"] = ttk.Entry(section, width=60)
+        self.entries["alerts"].insert(0, self.config.get("alerts", ""))
+        self.entries["alerts"].pack(fill="x")
 
     def _build_colors_section(self, parent):
         """Builds the Colors section: global colors plus one side-by-side
@@ -350,6 +366,9 @@ class ConfigWindow:
         if len(tickers) > MAX_TICKERS:
             raise ValueError(f"Ticker list exceeds MAX_TICKERS ({MAX_TICKERS}).")
 
+        alerts = self.entries["alerts"].get().strip()
+        parse_alerts(alerts, tickers, names)  # raises ValueError on a malformed alert
+
         def get_hex(key: str):
             value = self.entries[key].get().strip()
             if not value.startswith("#"):
@@ -383,6 +402,7 @@ class ConfigWindow:
         return {
             "tickers": tickers,
             "names": names,
+            "alerts": alerts,
             "bg_color": get_hex("bg_color"),
             "transparent_background": bool(self.transparent_background_var.get()),
             "error_color": get_hex("error_color"),

@@ -12,6 +12,7 @@ Vietnamese stocks update in realtime from the VPS price board; crypto, commoditi
 * **Realtime Vietnamese stocks:** Symbols ending in `.VN` (HOSE, HNX, and UPCoM stocks) refresh every 5 seconds during trading sessions, all in a single request.
 * **Any Yahoo Finance symbol:** Crypto (`BTC-USD`), commodities (`GC=F` gold, `BZ=F` Brent crude), and global stocks refresh once a minute. Yahoo delays some markets' quotes, e.g. 10 minutes for futures.
 * **Display names:** Label any symbol, e.g. `GC=F:Gold`.
+* **Price alerts:** A Windows notification when a symbol reaches a target price, e.g. `VHM>=65`.
 * **Detailed tooltips:** Hover over the tray icon to see the shown symbol's exchange, market state, price, change, and day high and low.
 * **Sleep:** Network requests pause while every tracked market is closed (lunch break, nights, weekends).
 * **Works behind corporate firewalls:** Data requests trust the certificates installed in Windows, so TLS-inspecting proxies don't break them.
@@ -51,6 +52,13 @@ Edit the watchlist in **Settings → Symbols** (or `TICKER=` in `config.cfg`), c
 * Anything else: its Yahoo Finance symbol, e.g. `BTC-USD`, `GC=F`, or `AAPL`.
 * Add `:Name` after a symbol to label it: `BTC-USD:BTC, BZ=F:Brent, GC=F:Gold, VHM.VN`.
 
+### Price Alerts
+
+List alerts in **Settings → Alerts** (or `ALERTS=` in `config.cfg`), comma separated: a tracked symbol or its display name, `>=` or `<=`, and a target price, e.g. `VHM>=65, Gold<=4000, BTC>=90000`.
+
+* Write prices the way the taskbar shows them: Vietnamese stocks in thousands of VND (`65` means 65,000 VND).
+* Each alert notifies once when its target is reached, and again only after the price has moved back and reaches it anew. An alert whose target is already reached notifies right after startup.
+
 ### Tray Icon Menu
 
 Right-click the tray icon to open its context menu:
@@ -66,10 +74,11 @@ A few more items appear only when they apply:
 
 ### Settings
 
-The **Settings** window is organized into three sections:
+The **Settings** window is organized into four sections:
 
 * **General** — scroll speed and display time (milliseconds, 100 ms steps; the display time is also how long the taskbar widget shows each symbol), icon font size and strip width (pixels), the continuous scroll and taskbar widget toggles, what the ticker shows per symbol (percentage, price, or both), and optional daily high (↑) / low (↓) values with their change percentages.
 * **Symbols** — the watchlist, up to twenty symbols with optional display names.
+* **Alerts** — price targets that raise a Windows notification.
 * **Colors** — the background color (or a transparent background) and error-strip color, a color scheme per market state (positive text, negative text, and strip color for Open, Premarket, After hours, and Closed), and the price limit colors for Vietnamese stocks (ceiling, reference, floor). Click any swatch to open a color picker.
 
 With the taskbar widget turned off, the prices go back into the tray icon itself, either one symbol at a time or as a continuously scrolling ticker.

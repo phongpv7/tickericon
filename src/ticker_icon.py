@@ -12,6 +12,7 @@ from src.continuous_scroll import ContinuousScrollGenerator
 from src.config_handler import ConfigHandler, display_name
 from src.config_window import ConfigWindow
 from src.taskbar_widget import TaskbarWidget
+from src.alerts import AlertMonitor, parse_alerts
 
 # Animation frame rate for the ticker symbol scroll (higher = smoother, more CPU)
 SCROLL_FRAME_INTERVAL_S = 0.04
@@ -40,6 +41,7 @@ class TickerIcon:
         self.api = MarketAPI(self.config['tickers'])
         self.icon_gen = IconGenerator(self.config)
         self.continuous_gen = ContinuousScrollGenerator(self.icon_gen, self.config)
+        self.alert_monitor = self._new_alert_monitor(self.config)
         self.display_thread = None
 
         # Latest fetched data per symbol, shared between the fetch and display
@@ -355,6 +357,7 @@ class TickerIcon:
             self.api = MarketAPI(self.config['tickers'])
             self.icon_gen = IconGenerator(self.config)
             self.continuous_gen = ContinuousScrollGenerator(self.icon_gen, self.config)
+            self.alert_monitor = self._new_alert_monitor(self.config)
             # Keep already-fetched data for retained tickers so a settings save
             # (e.g. toggling scroll mode) never shows zeroed placeholders.
             self.snapshot = {
@@ -382,6 +385,38 @@ class TickerIcon:
         if self.tray_icon is not None:
             self.tray_icon.notify(message, "TickerIcon")
 
+    @staticmethod
+    def _new_alert_monitor(config) -> AlertMonitor:
+        """
+        Args:
+            config (dict): The application configuration.
+
+        Returns:
+            AlertMonitor: Watches the configured price alerts. Malformed
+                entries in a hand-edited config file are skipped; the
+                Settings window rejects them before saving.
+        """
+        alerts = parse_alerts(config.get('alerts', ''), config['tickers'], config.get('names', {}), strict=False)
+        return AlertMonitor(alerts)
+
+    def _notify_alerts(self, fired):
+        """
+        Shows one Windows notification listing the alerts that just reached
+        their targets, e.g. 'VHM 65.2 ≥ 65'.
+
+        Args:
+            fired (List[Tuple[Alert, StockData]]): Alerts from AlertMonitor.check.
+        """
+        if not fired or self.tray_icon is None:
+            return
+        lines = [
+            f"{self._display_name(alert.symbol)} {self._widget_price(data.price, data.currency)} "
+            f"{'≥' if alert.above else '≤'} {alert.text}"
+            for alert, data in fired
+        ]
+        # Windows caps notification text at 256 characters
+        self.tray_icon.notify("\n".join(lines)[:255], "Price alert")
+
     def _fetch_loop(self):
         """Background loop that periodically refreshes market data for all tickers."""
         while self.running:
@@ -401,6 +436,9 @@ class TickerIcon:
                     continue
                 self.snapshot = snapshot
                 self.data_ready.set()
+                alert_monitor = self.alert_monitor
+
+            self._notify_alerts(alert_monitor.check(snapshot))
 
             all_closed = all(
                 data.state == 'closed' and not data.has_error
