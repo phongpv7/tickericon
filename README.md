@@ -3,13 +3,18 @@
 [![Latest Release](https://img.shields.io/github/v/release/phongpv7/tickericon)](https://github.com/phongpv7/tickericon/releases/latest)
 [![License: MIT](https://img.shields.io/github/license/phongpv7/tickericon)](LICENSE)
 
-A lightweight, open-source Windows application that embeds a live, automatically updating stock ticker directly into the system tray. 
-Relies on Yahoo Finance for 1-minute updates during regular, pre-market, and after-hours trading sessions.
+A lightweight Windows app that shows market prices as text right on the taskbar, next to the tray icons, rotating through your watchlist.
+Vietnamese stocks update in realtime from the VPS price board; crypto, commodities, and other markets come from Yahoo Finance.
 
 ## Features
-* **At-a-glance:** The icon displays the daily percentage change on a static background, with a thin strip along the bottom that is color-coded for market state (premarket, open, after hours, closed) and turns to the error color when data can't be fetched — in which case the icon keeps showing the last known values. Every market state has its own color scheme (positive/negative text colors and strip color), so symbols from exchanges around the world stay readable in one rotation. The strip width is configurable and can be set to 0 to disable it.
-* **Detailed Tooltips:** Hover over the icon to instantly see current price, exact percentage change, day high, and day low.
-* **Sleep:** Automatically suspends network requests overnight and on weekends.
+* **Taskbar widget:** Each symbol shows its name, price, and daily change (e.g. `VHM 63.5 +0.79%`) in a normal-size font on a transparent background, then rotates to the next symbol. The widget hides while a full-screen app is running.
+* **Vietnamese price board colors:** Ceiling (purple), up (green), reference (yellow), down (red), and floor (blue), with prices in thousands of VND like on local price boards. A price that failed to refresh turns gray.
+* **Realtime Vietnamese stocks:** Symbols ending in `.VN` (HOSE, HNX, and UPCoM stocks) refresh every 5 seconds during trading sessions, all in a single request.
+* **Any Yahoo Finance symbol:** Crypto (`BTC-USD`), commodities (`GC=F` gold, `BZ=F` Brent crude), and global stocks refresh once a minute. Yahoo delays some markets' quotes, e.g. 10 minutes for futures.
+* **Display names:** Label any symbol, e.g. `GC=F:Gold`.
+* **Detailed tooltips:** Hover over the tray icon to see the shown symbol's exchange, market state, price, change, and day high and low.
+* **Sleep:** Network requests pause while every tracked market is closed (lunch break, nights, weekends).
+* **Works behind corporate firewalls:** Data requests trust the certificates installed in Windows, so TLS-inspecting proxies don't break them.
 
 ## Prerequisites
 * Windows 10 or 11
@@ -17,16 +22,34 @@ Relies on Yahoo Finance for 1-minute updates during regular, pre-market, and aft
 ## Installation
 
 1. Download `TickerIcon-Setup.exe` from the [latest release](https://github.com/phongpv7/tickericon/releases/latest).
-2. Run the installer and follow the setup prompts.
+2. Run the installer and follow the setup prompts. The installer isn't code-signed, so Windows SmartScreen may warn about it; choose **More info → Run anyway**.
 3. Launch TickerIcon from the Start Menu.
 
 If you prefer a portable copy, each release also includes `TickerIcon.zip`.
 
+### Running from source
+
+Requires Python 3.12 or newer:
+
+```text
+git clone https://github.com/phongpv7/tickericon.git
+cd tickericon
+python -m venv .venv
+.venv\Scripts\pip install -r requirements.txt
+.venv\Scripts\pythonw main.pyw
+```
+
 ## Usage
 
-Launch TickerIcon from the Start Menu or by opening the installed application directly. It runs silently in the background without opening a command prompt window. 
+TickerIcon runs silently in the background. Prices appear on the taskbar just left of the tray icons; the tray icon itself shows the app icon and holds the menu (Windows may tuck it under the up-arrow `^` on the taskbar).
 
-*Note: Windows hides new tray icons in the overflow menu by default. Click the up-arrow `^` on your taskbar and drag the new stock icon down to the visible portion of your taskbar so it is always visible.*
+### Symbols
+
+Edit the watchlist in **Settings → Symbols** (or `TICKER=` in `config.cfg`), comma separated, up to twenty symbols:
+
+* Vietnamese stocks: the stock code plus `.VN`, e.g. `VHM.VN` or `SHS.VN`.
+* Anything else: its Yahoo Finance symbol, e.g. `BTC-USD`, `GC=F`, or `AAPL`.
+* Add `:Name` after a symbol to label it: `BTC-USD:BTC, BZ=F:Brent, GC=F:Gold, VHM.VN`.
 
 ### Tray Icon Menu
 
@@ -45,18 +68,20 @@ A few more items appear only when they apply:
 
 The **Settings** window is organized into three sections:
 
-* **General** — scroll speed and display time (milliseconds, 100 ms steps), icon font size and strip width (pixels), the continuous scroll toggle, what the continuous ticker shows per symbol (percentage, price, or both), and optional daily high (↑) / low (↓) values with their change percentages.
-* **Symbols** — the list of tracked ticker symbols (up to twenty).
-* **Colors** — the static background and error-strip colors, plus a color scheme per market state (positive text, negative text, and strip color for Open, Premarket, After hours, and Closed). Click any swatch to open a color picker.
+* **General** — scroll speed and display time (milliseconds, 100 ms steps; the display time is also how long the taskbar widget shows each symbol), icon font size and strip width (pixels), the continuous scroll and taskbar widget toggles, what the ticker shows per symbol (percentage, price, or both), and optional daily high (↑) / low (↓) values with their change percentages.
+* **Symbols** — the watchlist, up to twenty symbols with optional display names.
+* **Colors** — the background color (or a transparent background) and error-strip color, a color scheme per market state (positive text, negative text, and strip color for Open, Premarket, After hours, and Closed), and the price limit colors for Vietnamese stocks (ceiling, reference, floor). Click any swatch to open a color picker.
+
+With the taskbar widget turned off, the prices go back into the tray icon itself, either one symbol at a time or as a continuously scrolling ticker.
 
 After you save your changes, TickerIcon reloads the configuration automatically. Configuration files from older versions are read transparently and upgraded to the new format on the next save.
 
 ## Running on Startup
 Choose **Start TickerIcon when I sign in to Windows** during installation if you want it to launch automatically at sign-in. If you skipped that option, run the latest installer again and enable the startup option.
 
-## Building a Windows Package
+When running from source, put a shortcut in your Startup folder (`Win+R` → `shell:startup`) that runs `.venv\Scripts\pythonw.exe` with `main.pyw` as its argument and the project folder as its working directory.
 
-Python is only required when running the project from source or building release artifacts.
+## Building a Windows Package
 
 Build the application on Windows because PyInstaller produces a
 platform-specific executable:

@@ -37,6 +37,14 @@ jobs:
           Copy-Item config.cfg dist/TickerIcon/config.cfg
           Compress-Archive -Path dist/TickerIcon/* -DestinationPath dist/TickerIcon.zip
 
+      # Not every windows-latest runner image ships Inno Setup
+      - name: Install Inno Setup if missing
+        shell: powershell
+        run: |
+          if (-not (Test-Path "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe")) {
+            choco install innosetup --no-progress -y
+          }
+
       - name: Build Windows installer
         shell: powershell
         run: |
