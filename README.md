@@ -25,7 +25,7 @@ Prices stream in realtime: Vietnamese stocks from the VPS price board, and crypt
 
 1. Download `TickerIcon-Setup.exe` from the [latest release](https://github.com/phongpv7/tickericon/releases/latest).
 2. Run the installer and follow the setup prompts. The installer isn't code-signed, so Windows SmartScreen may warn about it; choose **More info → Run anyway**.
-3. Launch TickerIcon from the Start Menu.
+3. Launch TickerIcon from the Start Menu, or from the desktop shortcut if you chose to create one.
 
 If you prefer a portable copy, each release also includes `TickerIcon.zip`.
 
@@ -43,7 +43,7 @@ python -m venv .venv
 
 ## Usage
 
-TickerIcon runs silently in the background. Prices appear on the taskbar just left of the tray icons; the tray icon itself shows the app icon and holds the menu (Windows may tuck it under the up-arrow `^` on the taskbar).
+TickerIcon runs silently in the background. Prices appear on the taskbar just left of the tray icons; the tray icon itself shows the app icon and holds the menu (Windows may tuck it under the up-arrow `^` on the taskbar). Only one copy runs at a time; starting TickerIcon again while it's running just says so.
 
 ### Symbols
 
@@ -90,7 +90,7 @@ After you save your changes, TickerIcon reloads the configuration automatically.
 ## Running on Startup
 Choose **Start TickerIcon when I sign in to Windows** during installation if you want it to launch automatically at sign-in. If you skipped that option, run the latest installer again and enable the startup option.
 
-When running from source, put a shortcut in your Startup folder (`Win+R` → `shell:startup`) that runs `.venv\Scripts\pythonw.exe` with `main.pyw` as its argument and the project folder as its working directory.
+When running from source, put a shortcut in your Startup folder (`Win+R` → `shell:startup`) that runs `.venv\Scripts\pythonw.exe` with `main.pyw` as its argument and the project folder as its working directory. The same shortcut works in the Start Menu (`shell:programs`) and on the desktop.
 
 ## Building a Windows Package
 
