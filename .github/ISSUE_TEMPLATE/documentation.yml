@@ -1,0 +1,31 @@
+name: Documentation
+description: Report an issue with, or suggest an improvement to, the documentation
+title: "[Docs]: "
+labels: ["documentation"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for helping improve the documentation!
+  - type: input
+    id: location
+    attributes:
+      label: Location
+      description: Which file, section, or page does this concern?
+      placeholder: e.g. README.md, SECURITY.md
+    validations:
+      required: true
+  - type: textarea
+    id: suggestion
+    attributes:
+      label: Suggested Change
+      description: How should the documentation be updated?
+    validations:
+      required: false
+  - type: textarea
+    id: additional
+    attributes:
+      label: Additional Context
+      description: Add any other context about the documentation issue here.
+    validations:
+      required: false
