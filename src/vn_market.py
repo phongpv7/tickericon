@@ -1,16 +1,27 @@
+import json
+import threading
 from dataclasses import dataclass
-from datetime import datetime, time, timedelta
-from typing import Dict, List, Optional
+from datetime import date, datetime, time, timedelta
+from time import monotonic
+from typing import Dict, List, Optional, Tuple
 from zoneinfo import ZoneInfo
 
 from curl_cffi import requests
 
-# Yahoo Finance suffix for Ho Chi Minh Stock Exchange symbols, e.g. 'VHM.VN'.
-# Yahoo delays these quotes by 15 minutes, so they come from a local price board instead.
+from src.price_stream import SocketIOStream
+
+# Suffix marking Vietnamese stocks (HOSE, HNX, and UPCoM), e.g. 'VHM.VN'
 VN_SUFFIX = '.VN'
 
 # JSON feed behind the VPS Securities web price board; takes comma-separated stock codes
 BOARD_URL = 'https://bgapidatafeed.vps.com.vn/getliststockdata/{codes}'
+
+# Socket.IO feed behind the same board, pushing every match as it happens
+STREAM_URL = 'wss://bgdatafeed.vps.com.vn/socket.io/?EIO=4&transport=websocket'
+
+# Id of the board's 'stock' event messages describing a match; others carry
+# bids and asks, foreign ownership room, and so on
+_MATCH_MESSAGE_ID = 3220
 
 VN_TZ = ZoneInfo('Asia/Ho_Chi_Minh')
 
@@ -42,6 +53,15 @@ class BoardQuote:
     exchange: str
 
 
+@dataclass
+class BoardMatch:
+    """A match streamed from the price board, in VND."""
+
+    price: float
+    day_high: float
+    day_low: float
+
+
 def is_vn_symbol(symbol: str) -> bool:
     """
     Args:
@@ -51,6 +71,18 @@ def is_vn_symbol(symbol: str) -> bool:
         bool: True for Vietnamese symbols served by the price board, e.g. 'VHM.VN'.
     """
     return symbol.upper().endswith(VN_SUFFIX)
+
+
+def vn_symbol(code: str) -> str:
+    """
+    Args:
+        code (str): A Vietnamese stock code, e.g. 'VHM' (or already 'VHM.VN').
+
+    Returns:
+        str: The symbol the app tracks it by, e.g. 'VHM.VN'.
+    """
+    code = code.upper()
+    return code if code.endswith(VN_SUFFIX) else code + VN_SUFFIX
 
 
 def session_state(now: datetime) -> str:
@@ -97,8 +129,9 @@ def next_session_start(now: datetime) -> datetime:
 
 class PriceBoard:
     """
-    Fetches realtime quotes for Vietnamese '.VN' symbols from the VPS
-    price board feed, all symbols in a single request.
+    Realtime quotes for Vietnamese '.VN' symbols from the VPS price board:
+    full quotes for all symbols in a single REST request, and every match
+    as it happens over the board's Socket.IO stream.
     """
 
     def __init__(self, timeout: float = 10):
@@ -109,6 +142,16 @@ class PriceBoard:
         self.timeout = timeout
         # Created on first use and reused, keeping the connection alive between fetches
         self._session = None
+        self._stream = SocketIOStream(
+            STREAM_URL,
+            # Joins the codes as one comma-separated list, like the web board
+            subscribe_message=lambda codes: ['regs', json.dumps({'action': 'join', 'list': ','.join(codes)})],
+            on_message=self._on_event,
+        )
+        # Latest streamed match per stock code, with when it arrived
+        # (monotonic()) and its trading day, written on the stream's thread
+        self._matches: Dict[str, Tuple[BoardMatch, float, date]] = {}
+        self._matches_lock = threading.Lock()
 
     def fetch(self, symbols: List[str]) -> Dict[str, BoardQuote]:
         """
@@ -128,6 +171,8 @@ class PriceBoard:
             self._session = requests.Session(impersonate='chrome')
 
         by_code = {symbol[:-len(VN_SUFFIX)].upper(): symbol for symbol in symbols}
+        for code in by_code:
+            self._stream.subscribe(code)
         response = self._session.get(BOARD_URL.format(codes=','.join(by_code)), timeout=self.timeout)
         response.raise_for_status()
 
@@ -138,6 +183,58 @@ class PriceBoard:
             if symbol is not None and quote is not None:
                 quotes[symbol] = quote
         return quotes
+
+    def streamed_matches(self, symbols: List[str]) -> Dict[str, BoardMatch]:
+        """
+        Args:
+            symbols (List[str]): '.VN' ticker symbols, e.g. ['VHM.VN'].
+
+        Returns:
+            Dict[str, BoardMatch]: Each symbol's latest match today, streamed
+                since the stream last connected (matches missed while it
+                reconnected make older ones stale); symbols without one are
+                left out.
+        """
+        if not self._stream.live:
+            return {}
+        today = datetime.now(VN_TZ).date()
+        with self._matches_lock:
+            matches = dict(self._matches)
+        current = {}
+        for symbol in symbols:
+            entry = matches.get(symbol[:-len(VN_SUFFIX)].upper())
+            if entry is not None and entry[1] >= self._stream.connected_at and entry[2] == today:
+                current[symbol] = entry[0]
+        return current
+
+    def close(self) -> None:
+        """Stops the match stream."""
+        self._stream.close()
+
+    def _on_event(self, event: str, payload) -> None:
+        """
+        Records each streamed match; called on the stream's thread.
+
+        Args:
+            event (str): The Socket.IO event name.
+            payload: The event's argument: {'data': {...}} with the board's
+                own fields for 'stock' events, prices in thousands of VND.
+        """
+        if event != 'stock' or not isinstance(payload, dict):
+            return
+        data = payload.get('data')
+        if not isinstance(data, dict) or data.get('id') != _MATCH_MESSAGE_ID:
+            return
+        price = self._thousands_to_vnd(data.get('lastPrice'))
+        if price <= 0:
+            return
+        match = BoardMatch(
+            price=price,
+            day_high=self._thousands_to_vnd(data.get('hp')) or price,
+            day_low=self._thousands_to_vnd(data.get('lp')) or price,
+        )
+        with self._matches_lock:
+            self._matches[str(data.get('sym', '')).upper()] = (match, monotonic(), datetime.now(VN_TZ).date())
 
     @staticmethod
     def _parse_quote(item: dict) -> Optional[BoardQuote]:

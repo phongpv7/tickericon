@@ -61,9 +61,6 @@ class TickerIcon:
         # Set when the enabled-symbol set changes so display loops re-read it.
         self.display_dirty = threading.Event()
 
-        # Set by the Refresh Now menu item to trigger an immediate data fetch.
-        self.refresh_requested = threading.Event()
-
         # Set once the first fetch completes, so the display loop doesn't
         # show stale/zeroed data before real data is available.
         self.data_ready = threading.Event()
@@ -189,8 +186,6 @@ class TickerIcon:
             # menu is rebuilt after a settings save.
             pystray.MenuItem('Next Symbol', self.on_next_symbol, default=True,
                              visible=lambda item: self._cycles_symbols()),
-            # Realtime symbols refresh every second or faster anyway
-            pystray.MenuItem('Refresh Now', self.on_refresh, visible=lambda item: not self.api.realtime),
             pystray.MenuItem('Symbols', pystray.Menu(self._symbol_menu_items),
                              visible=lambda item: len(self.config['tickers']) > 1),
             pystray.MenuItem('Settings', self.on_settings),
@@ -231,17 +226,6 @@ class TickerIcon:
         """
         if len(self._get_enabled_symbols()) > 1:
             self.skip_requested.set()
-
-    def on_refresh(self, icon, menu_item):
-        """
-        Callback for the Refresh Now menu option: wakes the fetch loop so
-        market data is refreshed immediately.
-
-        Args:
-            icon (pystray.Icon): The tray icon instance.
-            menu_item (pystray.MenuItem): The menu item that was clicked.
-        """
-        self.refresh_requested.set()
 
     def on_toggle_symbol(self, symbol: str):
         """
@@ -423,16 +407,13 @@ class TickerIcon:
     def _fetch_loop(self):
         """Background loop that periodically refreshes market data for all tickers."""
         while self.running:
-            # Refresh Now also refetches symbols that were fetched moments ago
-            force = self.refresh_requested.is_set()
-            self.refresh_requested.clear()
             with self.lock:
                 api = self.api
                 config_version = self.config
                 previous_snapshot = self.snapshot
 
             # Pass the last snapshot so failed fetches keep showing last known values
-            snapshot = api.fetch_all(previous_snapshot, force=force)
+            snapshot = api.fetch_all(previous_snapshot)
 
             with self.lock:
                 if api is not self.api or config_version is not self.config:
@@ -462,17 +443,14 @@ class TickerIcon:
 
     def _sleep_between_fetches(self, seconds: float):
         """
-        Sleeps between fetches, waking early on shutdown, a manual refresh
-        request, or when a config save cleared data_ready (new tickers need
-        an immediate fetch).
+        Sleeps between fetches, waking early on shutdown or when a config
+        save cleared data_ready (new tickers need an immediate fetch).
 
         Args:
             seconds (float): Maximum time to sleep for, in seconds.
         """
         end_time = time.monotonic() + seconds
-        while (self.running
-                and self.data_ready.is_set() and not self.refresh_requested.is_set()
-                and time.monotonic() < end_time):
+        while self.running and self.data_ready.is_set() and time.monotonic() < end_time:
             time.sleep(0.1)
 
     def _display_loop(self):
@@ -723,8 +701,8 @@ class TickerIcon:
 
         Args:
             value (float): The price to format.
-            currency (str): The quote currency code from Yahoo Finance, e.g.
-                'VND'; empty when unknown.
+            currency (str): The quote currency code, e.g. 'VND' or 'USD';
+                empty when unknown.
 
         Returns:
             str: '$123.45' for US dollars (or an unknown currency), otherwise

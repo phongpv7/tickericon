@@ -4,20 +4,18 @@
 [![License: MIT](https://img.shields.io/github/license/phongpv7/tickericon)](LICENSE)
 
 A lightweight Windows app that shows market prices as text right on the taskbar, next to the tray icons, rotating through your watchlist.
-Prices update in realtime: Vietnamese stocks from the VPS price board, crypto from Binance, and gold, oil, and other commodities from Hyperliquid. Other markets come from Yahoo Finance.
+Prices stream in realtime: Vietnamese stocks from the VPS price board, and crypto, gold, oil, and global stocks from Binance.
 
 ## Features
 * **Taskbar widget:** Each symbol shows its name, price, and daily change (e.g. `VHM 63.5 +0.79%`) in a normal-size font on a transparent background, then rotates to the next symbol. The widget hides while a full-screen app is running.
 * **Vietnamese price board colors:** Ceiling (purple), up (green), reference (yellow), down (red), and floor (blue), with prices in thousands of VND like on local price boards. A price that failed to refresh turns gray.
-* **Realtime Vietnamese stocks:** Symbols ending in `.VN` (HOSE, HNX, and UPCoM stocks) refresh every second during trading sessions, all in a single request.
-* **Realtime crypto:** Crypto symbols such as `BTC-USD` stream from Binance trade by trade, with the daily change measured from midnight Vietnam time. Coins Binance doesn't list fall back to Yahoo Finance.
-* **Realtime commodities:** Gold (`GC=F`), silver (`SI=F`), copper (`HG=F`), platinum (`PL=F`), palladium (`PA=F`), WTI crude (`CL=F`), Brent crude (`BZ=F`), natural gas (`NG=F`), and heating oil (`HO=F`) stream from Hyperliquid's oracle prices, which follow the underlying markets, with the change over the last 24 hours. They fall back to Yahoo Finance while Hyperliquid is unreachable.
-* **Any Yahoo Finance symbol:** Global stocks, indices, other futures, and more refresh once a minute. Yahoo delays some markets' quotes, e.g. 10 minutes for futures.
+* **Realtime Vietnamese stocks:** HOSE, HNX, and UPCoM stocks stream from the VPS price board as each match happens during trading sessions; while the stream is down, the board is polled every second instead.
+* **Realtime world markets:** Crypto, gold, silver, oil, natural gas, and US and Asian stocks stream from Binance trade by trade, converted from USDT to US dollars, with the daily change measured from midnight Vietnam time.
 * **Fast updates:** The taskbar widget picks up new prices four times a second.
-* **Display names:** Label any symbol, e.g. `GC=F:Gold`.
+* **Display names:** Label any symbol, e.g. `XAU:Gold`.
 * **Price alerts:** A Windows notification when a symbol reaches a target price, e.g. `VHM>=65`.
 * **Detailed tooltips:** Hover over the tray icon to see the shown symbol's exchange, market state, price, change, and day high and low.
-* **Sleep:** Network requests pause while every tracked market is closed (lunch break, nights, weekends).
+* **Sleep:** A watchlist of only Vietnamese stocks pauses its requests outside trading sessions (lunch break, nights, weekends).
 * **Works behind corporate firewalls:** Data requests trust the certificates installed in Windows, so TLS-inspecting proxies don't break them.
 
 ## Prerequisites
@@ -49,11 +47,13 @@ TickerIcon runs silently in the background. Prices appear on the taskbar just le
 
 ### Symbols
 
-Edit the watchlist in **Settings → Symbols** (or `TICKER=` in `config.cfg`), comma separated, up to twenty symbols:
+Edit the two watchlists in **Settings → Symbols** (or in `config.cfg`), comma separated, up to twenty symbols in all:
 
-* Vietnamese stocks: the stock code plus `.VN`, e.g. `VHM.VN` or `SHS.VN`.
-* Anything else: its Yahoo Finance symbol, e.g. `BTC-USD` (served by Binance), `GC=F` (served by Hyperliquid), or `AAPL`.
-* Add `:Name` after a symbol to label it: `BTC-USD:BTC, BZ=F:Brent, GC=F:Gold, VHM.VN`.
+* **International** (`TICKER_INTERNATIONAL=`): each asset by its Binance name. Crypto such as `BTC` or `ETH` comes from Binance's spot market. Gold `XAU`, silver `XAG`, platinum `XPT`, palladium `XPD`, `COPPER`, WTI crude `CL`, Brent crude `BZ`, `NATGAS`, and stocks and ETFs such as `AAPL`, `TSLA`, or `SPY` come from its perpetual futures, which trade around the clock, even while their home markets are closed. Prices are converted from USDT to US dollars at Binance's USDC/USDT rate.
+* **Vietnam** (`TICKER_VIETNAM=`): just the stock code, e.g. `VHM` or `SHS`.
+* Add `:Name` after a symbol to label it, e.g. `BTC, BZ:Brent, XAU:Gold`.
+
+The taskbar shows the international symbols first, then the Vietnamese ones. Yahoo Finance symbols from older versions, such as `BTC-USD` or `GC=F`, still work.
 
 ### Price Alerts
 
@@ -72,16 +72,15 @@ Right-click the tray icon to open its context menu:
 A few more items appear only when they apply:
 
 * **Next Symbol** jumps to the next enabled symbol while the tray icon rotates through several symbols; clicking the icon does the same.
-* **Refresh Now** fetches fresh market data immediately; it's hidden when every symbol already refreshes in realtime.
 * **Symbols** lists every configured symbol with a checkmark when there is more than one; toggle one to show or hide it. This only filters the display — data is still fetched for all configured symbols — and the last enabled symbol cannot be hidden.
 
 ### Settings
 
-The **Settings** window is organized into four sections:
+The **Settings** window is organized into four tabs, with Save and Cancel below them:
 
-* **General** — scroll speed and display time (milliseconds, 100 ms steps; the display time is also how long the taskbar widget shows each symbol), icon font size and strip width (pixels), the continuous scroll and taskbar widget toggles, what the ticker shows per symbol (percentage, price, or both), and optional daily high (↑) / low (↓) values with their change percentages.
-* **Symbols** — the watchlist, up to twenty symbols with optional display names.
+* **Symbols** — the international and Vietnamese watchlists, up to twenty symbols in all, with optional display names.
 * **Alerts** — price targets that raise a Windows notification.
+* **General** — scroll speed and display time (milliseconds, 100 ms steps; the display time is also how long the taskbar widget shows each symbol), icon font size and strip width (pixels), the continuous scroll and taskbar widget toggles, what the ticker shows per symbol (percentage, price, or both), and optional daily high (↑) / low (↓) values with their change percentages.
 * **Colors** — the background color (or a transparent background) and error-strip color, a color scheme per market state (positive text, negative text, and strip color for Open, Premarket, After hours, and Closed), and the price limit colors for Vietnamese stocks (ceiling, reference, floor). Click any swatch to open a color picker.
 
 With the taskbar widget turned off, the prices go back into the tray icon itself, either one symbol at a time or as a continuously scrolling ticker.

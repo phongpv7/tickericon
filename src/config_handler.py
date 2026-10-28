@@ -1,13 +1,14 @@
 import configparser
 from typing import Dict, List, Tuple, TypedDict
 
-from src.vn_market import VN_SUFFIX
+from src.vn_market import VN_SUFFIX, is_vn_symbol, vn_symbol
+from src.world_market import base_asset
 
 RGB = Tuple[int, int, int]
 
-# yfinance has no batch quote endpoint; it issues one HTTP request per
-# ticker (Vietnamese '.VN' symbols share a single price board request), so
-# the tracked symbol list is capped to keep polling reasonable.
+# Caps the tracked symbol list: each one outside Vietnam is a stream
+# subscription with a REST refresh every minute, and the taskbar widget
+# rotates through them all.
 MAX_TICKERS = 20
 
 # Default icon font size in pixels; ~44 is the largest that still fits '9.9' in the 64px icon.
@@ -55,12 +56,13 @@ def display_name(symbol: str, names: Dict[str, str]) -> str:
         names (Dict[str, str]): Display names from the config, keyed by symbol.
 
     Returns:
-        str: The symbol's configured display name, or else the symbol itself,
-            without the '.VN' suffix Vietnamese stocks are never quoted with.
+        str: The symbol's configured display name, or else its stock code
+            (without the '.VN' suffix Vietnamese stocks are never quoted
+            with) or Binance asset, e.g. 'XAU' for 'GC=F'.
     """
     if names.get(symbol):
         return names[symbol]
-    return symbol[:-len(VN_SUFFIX)] if symbol.endswith(VN_SUFFIX) else symbol
+    return symbol[:-len(VN_SUFFIX)] if symbol.endswith(VN_SUFFIX) else base_asset(symbol)
 
 
 class StateColors(TypedDict):
@@ -135,7 +137,7 @@ class ConfigHandler:
     def parse_tickers(text: str) -> Tuple[List[str], Dict[str, str]]:
         """
         Parses a comma-separated ticker list whose entries may carry a
-        display name after a colon, e.g. 'GC=F:Gold, VHM.VN'.
+        display name after a colon, e.g. 'XAU:Gold, VHM.VN'.
 
         Args:
             text (str): The ticker list as written in the config or form.
@@ -166,9 +168,51 @@ class ConfigHandler:
             separator (str): The text placed between entries.
 
         Returns:
-            str: e.g. 'GC=F:Gold,VHM.VN'.
+            str: e.g. 'XAU:Gold,VHM.VN'.
         """
         return separator.join(f"{s}:{names[s]}" if names.get(s) else s for s in tickers)
+
+    @classmethod
+    def parse_watchlists(cls, international: str, vietnam: str) -> Tuple[List[str], Dict[str, str]]:
+        """
+        Parses the two watchlists into one symbol list, international symbols first.
+
+        Args:
+            international (str): Symbols outside Vietnam, e.g. 'BTC, XAU:Gold'.
+            vietnam (str): Vietnamese stock codes, e.g. 'VHM, VIC'.
+
+        Returns:
+            Tuple[List[str], Dict[str, str]]: The symbols in order, Vietnamese
+                ones with the '.VN' suffix the app tracks them by, and the
+                display names keyed by symbol.
+        """
+        tickers, names = cls.parse_tickers(international)
+        codes, code_names = cls.parse_tickers(vietnam)
+        tickers += [vn_symbol(code) for code in codes]
+        names.update({vn_symbol(code): name for code, name in code_names.items()})
+        return tickers, names
+
+    @classmethod
+    def format_watchlists(cls, tickers: List[str], names: Dict[str, str],
+                          separator: str = ",") -> Tuple[str, str]:
+        """
+        Formats symbols and their display names back into the two watchlists.
+
+        Args:
+            tickers (List[str]): The symbols, in order.
+            names (Dict[str, str]): Display names keyed by symbol.
+            separator (str): The text placed between entries.
+
+        Returns:
+            Tuple[str, str]: The international list and the Vietnamese one,
+                its codes without '.VN', e.g. ('XAU:Gold,BTC', 'VHM,VIC').
+        """
+        vietnam = [s for s in tickers if is_vn_symbol(s)]
+        codes = {s: s[:-len(VN_SUFFIX)] for s in vietnam}
+        return (
+            cls.format_tickers([s for s in tickers if not is_vn_symbol(s)], names, separator),
+            cls.format_tickers(list(codes.values()), {codes[s]: names[s] for s in vietnam if names.get(s)}, separator),
+        )
 
     def _read_text(self) -> str:
         """
@@ -217,7 +261,14 @@ class ConfigHandler:
         parser.read_string(f"[DEFAULT]\n{self._read_text()}")
         section = parser["DEFAULT"]
 
-        tickers, names = self.parse_tickers(section["TICKER"])
+        if "TICKER_INTERNATIONAL" in section or "TICKER_VIETNAM" in section:
+            tickers, names = self.parse_watchlists(
+                section.get("TICKER_INTERNATIONAL", ""), section.get("TICKER_VIETNAM", ""))
+        else:
+            # Older configs listed every symbol under TICKER, Vietnamese stocks
+            # with '.VN'; order them like the watchlists, international first
+            tickers, names = self.parse_tickers(section["TICKER"])
+            tickers.sort(key=is_vn_symbol)
         if len(tickers) > MAX_TICKERS:
             tickers = tickers[:MAX_TICKERS]
             names = {symbol: name for symbol, name in names.items() if symbol in tickers}
@@ -319,11 +370,13 @@ class ConfigHandler:
         if missing_states:
             raise ValueError(f"Missing color scheme for market states: {', '.join(missing_states)}.")
 
+        international, vietnam = self.format_watchlists(tickers, config.get('names', {}))
         lines = [
-            f"# Symbols to track, comma separated (max {MAX_TICKERS} — '.VN' symbols share one request,",
-            "# every other symbol takes one per minute);",
-            "# add :Name after a symbol to label it, e.g. GC=F:Gold",
-            f"TICKER={self.format_tickers(tickers, config.get('names', {}))}",
+            f"# Symbols to track, comma separated, at most {MAX_TICKERS} in all; add :Name after a",
+            "# symbol to label it, e.g. XAU:Gold. International symbols go by their Binance asset,",
+            "# e.g. BTC, XAU (gold), BZ (Brent crude), AAPL; Vietnamese stocks by their code, e.g. VHM",
+            f"TICKER_INTERNATIONAL={international}",
+            f"TICKER_VIETNAM={vietnam}",
             "",
             "# Price alerts: a Windows notification when a symbol reaches a price, comma separated,",
             "# e.g. VHM>=65, BTC<=80000 (Vietnamese stocks in thousands of VND, as on the taskbar)",

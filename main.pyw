@@ -14,7 +14,7 @@ def _resolve_config_path() -> str:
 
 
 if __name__ == "__main__":
-    # Before the first fetch: behind a TLS-inspecting firewall, Yahoo
+    # Before the first fetch: behind a TLS-inspecting firewall, market data
     # requests only verify against the CAs Windows trusts
     use_windows_trust_store()
     # Before the tray icon exists, so notifications say TickerIcon, not Python

@@ -46,7 +46,7 @@ BAND_LABELS = {
 
 class ConfigWindow:
     """Settings dialog for editing the tray app's persisted config,
-    organized into General / Symbols / Colors sections with native
+    organized into Symbols / Alerts / General / Colors tabs with native
     number inputs and a color picker per color field."""
 
     def __init__(self, config_path: str, config: dict, on_save=None):
@@ -85,29 +85,35 @@ class ConfigWindow:
         container = ttk.Frame(self.root, padding=PADDING)
         container.pack(fill="both", expand=True)
 
-        self._build_general_section(container)
-        self._build_symbols_section(container)
-        self._build_alerts_section(container)
-        self._build_colors_section(container)
+        # One tab per section keeps the window short enough for any screen,
+        # with Save and Cancel always in view below the tabs
+        notebook = ttk.Notebook(container)
+        notebook.pack(fill="both", expand=True)
+        for title, build_section in (("Symbols", self._build_symbols_section),
+                                     ("Alerts", self._build_alerts_section),
+                                     ("General", self._build_general_section),
+                                     ("Colors", self._build_colors_section)):
+            tab = ttk.Frame(notebook, padding=PADDING)
+            notebook.add(tab, text=title)
+            build_section(tab)
 
         actions = ttk.Frame(container)
-        actions.pack(side="bottom", fill="x", pady=(PADDING, 0))
+        actions.pack(fill="x", pady=(PADDING, 0))
         ttk.Button(actions, text="Save", command=self._save).pack(side="right")
         ttk.Button(actions, text="Cancel", command=self.root.destroy).pack(side="right", padx=(0, 8))
 
-    def _build_section(self, parent, title: str, description: str):
-        """Creates a titled section frame with a short description label.
+    def _build_section(self, parent, description: str):
+        """Creates a tab's body with a short description at the top.
 
         Args:
-            parent (ttk.Frame): The container to add the section to.
-            title (str): The section title.
-            description (str): One-line explanation shown under the title.
+            parent (ttk.Frame): The tab to fill.
+            description (str): A short explanation of the tab's fields.
 
         Returns:
-            ttk.Labelframe: The section body to place fields into.
+            ttk.Frame: The tab body to place fields into.
         """
-        section = ttk.Labelframe(parent, text=title, padding=PADDING)
-        section.pack(fill="x", pady=(0, PADDING))
+        section = ttk.Frame(parent)
+        section.pack(fill="x")
         ttk.Label(section, text=description, foreground="gray").pack(anchor="w", pady=(0, 6))
         return section
 
@@ -118,7 +124,7 @@ class ConfigWindow:
             parent (ttk.Frame): The container to add the section to.
         """
         section = self._build_section(
-            parent, "General",
+            parent,
             "Animation timing (milliseconds) and icon dimensions (pixels).",
         )
 
@@ -178,19 +184,28 @@ class ConfigWindow:
         ).pack(anchor="w", pady=(2, 0))
 
     def _build_symbols_section(self, parent):
-        """Builds the Symbols section: the tracked ticker list.
+        """Builds the Symbols section: the international and Vietnamese watchlists.
 
         Args:
             parent (ttk.Frame): The container to add the section to.
         """
         section = self._build_section(
-            parent, "Symbols",
-            f"Comma separated, up to {MAX_TICKERS} ticker symbols; add :Name to label one, e.g. GC=F:Gold.",
+            parent,
+            f"Comma separated, up to {MAX_TICKERS} in all; add :Name to label one, e.g. XAU:Gold.\n"
+            "International: Binance assets, e.g. BTC, ETH, XAU (gold), BZ (Brent), AAPL.\n"
+            "Vietnam: stock codes, e.g. VHM, VIC, SSI.",
         )
-        self.entries["tickers"] = ttk.Entry(section, width=60)
-        self.entries["tickers"].insert(0, ConfigHandler.format_tickers(
-            self.config["tickers"], self.config.get("names", {}), separator=", "))
-        self.entries["tickers"].pack(fill="x")
+        international, vietnam = ConfigHandler.format_watchlists(
+            self.config["tickers"], self.config.get("names", {}), separator=", ")
+        for label, key, value in (("International", "international", international),
+                                  ("Vietnam", "vietnam", vietnam)):
+            row = ttk.Frame(section)
+            row.pack(fill="x", pady=2)
+            ttk.Label(row, text=label, width=20).pack(side="left")
+            entry = ttk.Entry(row, width=48)
+            entry.insert(0, value)
+            entry.pack(side="left", fill="x", expand=True)
+            self.entries[key] = entry
 
     def _build_alerts_section(self, parent):
         """Builds the Alerts section: price targets that raise a Windows notification.
@@ -199,7 +214,7 @@ class ConfigWindow:
             parent (ttk.Frame): The container to add the section to.
         """
         section = self._build_section(
-            parent, "Alerts",
+            parent,
             "Notify when a price reaches a target, e.g. VHM>=65, BTC<=80000 (Vietnamese stocks in thousands).",
         )
         self.entries["alerts"] = ttk.Entry(section, width=60)
@@ -214,7 +229,7 @@ class ConfigWindow:
             parent (ttk.Frame): The container to add the section to.
         """
         section = self._build_section(
-            parent, "Colors",
+            parent,
             "Hex colors (#RRGGBB); click a swatch to open the color picker.",
         )
 
@@ -356,11 +371,8 @@ class ConfigWindow:
         Raises:
             ValueError: If required values are missing or invalid.
         """
-        tickers_raw = self.entries["tickers"].get().strip()
-        if not tickers_raw:
-            raise ValueError("At least one ticker is required.")
-
-        tickers, names = ConfigHandler.parse_tickers(tickers_raw)
+        tickers, names = ConfigHandler.parse_watchlists(
+            self.entries["international"].get(), self.entries["vietnam"].get())
         if not tickers:
             raise ValueError("At least one ticker is required.")
         if len(tickers) > MAX_TICKERS:

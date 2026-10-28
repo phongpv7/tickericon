@@ -5,7 +5,7 @@ from typing import List, Optional
 
 import certifi
 
-# Environment variables curl_cffi (yfinance's HTTP client) reads its CA bundle path from.
+# Environment variables curl_cffi, the HTTP and websocket client, reads its CA bundle path from.
 CA_BUNDLE_ENV_VARS = ('SSL_CERT_FILE', 'CURL_CA_BUNDLE', 'REQUESTS_CA_BUNDLE')
 
 # Extended key usage a Windows store certificate must be trusted for to verify HTTPS servers.
@@ -44,14 +44,14 @@ def _windows_store_pems() -> List[str]:
 
 def use_windows_trust_store(bundle_path: Optional[Path] = None) -> Optional[Path]:
     """
-    Makes yfinance trust the certificates Windows trusts, for this process only.
+    Makes curl_cffi trust the certificates Windows trusts, for this process only.
 
     curl_cffi verifies HTTPS against certifi's bundle alone, so behind a
     TLS-inspecting proxy (a corporate firewall re-signing traffic with its
-    own CA installed in Windows) every Yahoo Finance request fails with
-    "unable to get local issuer certificate". This writes certifi's bundle
-    plus the Windows store certificates to one file and points curl_cffi
-    at it through CURL_CA_BUNDLE. Must run before the first yfinance
+    own CA installed in Windows) every market data request and stream fails
+    with "unable to get local issuer certificate". This writes certifi's
+    bundle plus the Windows store certificates to one file and points
+    curl_cffi at it through CURL_CA_BUNDLE. Must run before the first
     request, as curl_cffi reads the variable when its session is created.
 
     Args:
