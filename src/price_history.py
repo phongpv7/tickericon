@@ -59,8 +59,13 @@ def fetch_history(symbol: str, days: int = HISTORY_DAYS, timeout: float = 10) ->
         raise LookupError(f"No price history for {symbol}: only Vietnamese stocks have it")
     code = symbol[:-len(VN_SUFFIX)].upper()
     end = int(time.time())
-    response = requests.get(VPS_HISTORY_URL.format(code=code, start=end - days * _DAY_S, end=end),
-                            impersonate='chrome', timeout=timeout)
+    url = VPS_HISTORY_URL.format(code=code, start=end - days * _DAY_S, end=end)
+    try:
+        response = requests.get(url, timeout=timeout)
+    except Exception:
+        # The feed (or a firewall on the way) has at times cut off one TLS
+        # handshake but not the other; a browser's is the fallback
+        response = requests.get(url, impersonate='chrome', timeout=timeout)
     response.raise_for_status()
     data = response.json()
     if data.get('s') != 'ok' or not data.get('t'):
