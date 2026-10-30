@@ -2,11 +2,12 @@ import itertools
 import time
 import threading
 from datetime import datetime
-from typing import Dict
+from typing import Dict, List, Optional, Tuple
 from zoneinfo import ZoneInfo
 import pystray
 
 from src.market_api import MarketAPI, StockData
+from src.price_history import Candles
 from src.icon_generator import IconGenerator
 from src.continuous_scroll import ContinuousScrollGenerator
 from src.config_handler import ConfigHandler, display_name
@@ -73,6 +74,10 @@ class TickerIcon:
         # Optional price display on the taskbar itself (see TASKBAR_WIDGET)
         self.taskbar_widget = None
 
+        # The symbol the taskbar widget stays on while its analysis popup is
+        # open, or None to rotate. Guarded by self.lock.
+        self._pinned_symbol: Optional[str] = None
+
     def start(self):
         """Initializes and runs the system tray application."""
         self.running = True
@@ -101,7 +106,7 @@ class TickerIcon:
         with self.lock:
             wanted = bool(self.config.get('taskbar_widget')) and TaskbarWidget.supported()
         if wanted and self.taskbar_widget is None:
-            self.taskbar_widget = TaskbarWidget(self._taskbar_widget_segments)
+            self.taskbar_widget = TaskbarWidget(self._taskbar_widget_segments, analysis=self)
             self.taskbar_widget.start()
         elif not wanted and self.taskbar_widget is not None:
             self.taskbar_widget.stop()
@@ -123,7 +128,7 @@ class TickerIcon:
             return []
         with self.lock:
             enabled = [s for s in self.config['tickers'] if s in self.enabled_symbols]
-            symbol = self._rotating_symbol(enabled, self.config['display_ms'])
+            symbol = self._widget_symbol(enabled)
             data = self.snapshot.get(symbol, StockData(symbol=symbol)) if symbol else None
             names = self.config.get('names', {})
             icon_gen = self.icon_gen
@@ -172,6 +177,77 @@ class TickerIcon:
         if not enabled:
             return None
         return enabled[int(time.monotonic() * 1000 // display_ms) % len(enabled)]
+
+    def _widget_symbol(self, enabled: List[str]) -> Optional[str]:
+        """
+        Call with self.lock held.
+
+        Args:
+            enabled (List[str]): The enabled symbols, in configuration order.
+
+        Returns:
+            Optional[str]: The symbol the taskbar widget shows: the one pinned
+                while its analysis popup is open, or else the rotation's.
+        """
+        if self._pinned_symbol in enabled:
+            return self._pinned_symbol
+        return self._rotating_symbol(enabled, self.config['display_ms'])
+
+    # The taskbar widget's analysis popup reads the app through these (see AnalysisSource)
+
+    def pin_symbol(self) -> Optional[str]:
+        """
+        Holds the taskbar widget on the symbol it shows now, while its
+        analysis popup is open.
+
+        Returns:
+            Optional[str]: That symbol, or None if no symbol is enabled.
+        """
+        with self.lock:
+            enabled = [s for s in self.config['tickers'] if s in self.enabled_symbols]
+            self._pinned_symbol = self._widget_symbol(enabled)
+            return self._pinned_symbol
+
+    def unpin_symbol(self) -> None:
+        """Lets the taskbar widget rotate through the symbols again."""
+        with self.lock:
+            self._pinned_symbol = None
+
+    def symbol_quote(self, symbol: str) -> Tuple[StockData, str]:
+        """
+        Args:
+            symbol (str): A tracked symbol.
+
+        Returns:
+            Tuple[StockData, str]: Its latest data and its display name.
+        """
+        with self.lock:
+            return self.snapshot.get(symbol, StockData(symbol=symbol)), self._display_name(symbol)
+
+    def symbol_history(self, symbol: str) -> Candles:
+        """
+        Fetches about a year of daily candles; blocks, so it's called on a worker thread.
+
+        Args:
+            symbol (str): A tracked symbol.
+
+        Returns:
+            Candles: Its daily candles, oldest first.
+        """
+        with self.lock:
+            api = self.api
+        return api.history(symbol)
+
+    def format_price(self, price: float, currency: str) -> str:
+        """
+        Args:
+            price (float): A price.
+            currency (str): Its currency code, e.g. 'VND'.
+
+        Returns:
+            str: The price formatted like the taskbar widget shows it.
+        """
+        return self._widget_price(price, currency)
 
     def _build_menu(self):
         """
@@ -472,7 +548,7 @@ class TickerIcon:
             # and a tooltip for the symbol the widget is showing
             if self.taskbar_widget is not None:
                 with self.lock:
-                    symbol = self._rotating_symbol(enabled, self.config['display_ms'])
+                    symbol = self._widget_symbol(enabled)
                     data = self.snapshot.get(symbol) if symbol else None
                 self.skip_requested.clear()
                 self.tray_icon.icon = self.icon_gen.generate_app_icon()

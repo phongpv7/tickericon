@@ -8,6 +8,7 @@ Prices stream in realtime: Vietnamese stocks from the VPS price board, and crypt
 
 ## Features
 * **Taskbar widget:** Each symbol shows its name, price, and daily change (e.g. `VHM 63.5 +0.79%`) in a normal-size font on a transparent background, then rotates to the next symbol. The widget hides while a full-screen app is running.
+* **Analysis on hover:** Rest the mouse on the prices on the taskbar for a daily chart of the symbol shown: about six months of candles with the 20, 50, and 200-day averages, Bollinger bands, volume, and RSI. Beside it, a technical read-out covers trend, momentum, volatility, volume, support and resistance, the 52-week range, performance from one week to one year, and a technical rating from moving average and oscillator signals. The widget stays on that symbol while the chart is open. The analysis is for reference only, not investment advice.
 * **Vietnamese price board colors:** Ceiling (purple), up (green), reference (yellow), down (red), and floor (blue), with prices in thousands of VND like on local price boards. A price that failed to refresh turns gray.
 * **Realtime Vietnamese stocks:** HOSE, HNX, and UPCoM stocks stream from the VPS price board as each match happens during trading sessions; while the stream is down, the board is polled every second instead.
 * **Realtime world markets:** Crypto, gold, silver, oil, natural gas, and US and Asian stocks stream from Binance trade by trade, converted from USDT to US dollars, with the daily change measured from midnight Vietnam time.

@@ -4,7 +4,7 @@ from datetime import datetime
 from typing import Dict, List, Optional
 from zoneinfo import ZoneInfo
 
-from src import vn_market, world_market
+from src import price_history, vn_market, world_market
 
 # Seconds between fetches while a market is open: Binance trades and price
 # board matches stream in continuously, so every fetch picks up their latest
@@ -89,6 +89,21 @@ class MarketAPI:
         """Stops the price streams; call before dropping this instance."""
         self.price_board.close()
         self.world_ticker.close()
+
+    def history(self, symbol: str) -> price_history.Candles:
+        """
+        Fetches about a year of daily candles for one symbol (see
+        price_history.fetch_history), in the currency its quotes use. Blocks
+        on the network, and safe to call from any thread.
+
+        Args:
+            symbol (str): A tracked symbol, e.g. 'VHM.VN' or 'XAU'.
+
+        Returns:
+            price_history.Candles: Its daily candles, oldest first.
+        """
+        return price_history.fetch_history(symbol, usdt_per_usd=self.world_ticker.usdt_per_usd,
+                                           futures=self.world_ticker.is_futures(symbol))
 
     def fetch_all(self, previous: Optional[Dict[str, StockData]] = None) -> Dict[str, StockData]:
         """

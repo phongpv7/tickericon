@@ -4,6 +4,8 @@ import threading
 import time
 from typing import Callable, List, Optional, Tuple
 
+from src.analysis_popup import AnalysisPopup, AnalysisSource
+
 try:
     import tkinter as tk
     from tkinter import font as tkfont
@@ -130,15 +132,21 @@ class TaskbarWidget:
 
     Runs its own Tk event loop on a background thread and pulls the text to
     show from `provider` on every refresh; an empty result hides the widget.
+    Resting the mouse on the text opens a chart and technical analysis of the
+    symbol shown (see AnalysisPopup).
     """
 
-    def __init__(self, provider: Callable[[], List[Segment]]):
+    def __init__(self, provider: Callable[[], List[Segment]], analysis: Optional[AnalysisSource] = None):
         """
         Args:
             provider (Callable[[], List[Segment]]): Returns the text runs to
                 show; called on the widget's own thread.
+            analysis (Optional[AnalysisSource]): The data for the analysis
+                popup; None leaves it out.
         """
         self.provider = provider
+        self.analysis = analysis
+        self._popup = None
         self._stop = threading.Event()
         self._root = None
         self._canvas = None
@@ -177,6 +185,12 @@ class TaskbarWidget:
         self._font = tkfont.Font(root, family=FONT_FAMILY, size=FONT_SIZE_PT, weight='bold')
         self._canvas = tk.Canvas(root, highlightthickness=0, borderwidth=0)
         self._canvas.pack(fill='both', expand=True)
+        if self.analysis is not None:
+            self._popup = AnalysisPopup(root, self.analysis)
+            self._popup.prepare()
+            # Only the text's pixels catch the mouse; the keyed-out background lets it through
+            self._canvas.bind('<Enter>', lambda event: self._popup.widget_entered())
+            self._canvas.bind('<Leave>', lambda event: self._popup.widget_left())
         self._tick()
         root.mainloop()
 
@@ -223,6 +237,8 @@ class TaskbarWidget:
         if geometry != self._geometry:
             self._geometry = geometry
             self._root.geometry(geometry)
+        if self._popup is not None:
+            self._popup.set_anchor(left + self._width, top, bottom)
 
         if not self._visible:
             self._visible = True
@@ -257,7 +273,9 @@ class TaskbarWidget:
         self._drawn = segments
 
     def _hide(self) -> None:
-        """Withdraws the window if it's showing."""
+        """Withdraws the window if it's showing, and the analysis popup with it."""
+        if self._popup is not None:
+            self._popup.hide()
         if self._visible:
             self._visible = False
             self._root.withdraw()
