@@ -8,6 +8,7 @@ import pystray
 
 from src.market_api import MarketAPI, StockData
 from src.price_history import Candles
+from src.vn_market import is_vn_symbol
 from src.icon_generator import IconGenerator
 from src.continuous_scroll import ContinuousScrollGenerator
 from src.config_handler import ConfigHandler, display_name
@@ -198,15 +199,20 @@ class TickerIcon:
     def pin_symbol(self) -> Optional[str]:
         """
         Holds the taskbar widget on the symbol it shows now, while its
-        analysis popup is open.
+        analysis popup is open. Only Vietnamese stocks have the analysis;
+        the international symbols are there to keep an eye on.
 
         Returns:
-            Optional[str]: That symbol, or None if no symbol is enabled.
+            Optional[str]: That symbol, or None if it isn't a Vietnamese
+                stock or no symbol is enabled.
         """
         with self.lock:
             enabled = [s for s in self.config['tickers'] if s in self.enabled_symbols]
-            self._pinned_symbol = self._widget_symbol(enabled)
-            return self._pinned_symbol
+            symbol = self._widget_symbol(enabled)
+            if symbol is None or not is_vn_symbol(symbol):
+                return None
+            self._pinned_symbol = symbol
+            return symbol
 
     def unpin_symbol(self) -> None:
         """Lets the taskbar widget rotate through the symbols again."""
@@ -224,19 +230,20 @@ class TickerIcon:
         with self.lock:
             return self.snapshot.get(symbol, StockData(symbol=symbol)), self._display_name(symbol)
 
-    def symbol_history(self, symbol: str) -> Candles:
+    def symbol_history(self, symbol: str, days: int) -> Candles:
         """
-        Fetches about a year of daily candles; blocks, so it's called on a worker thread.
+        Fetches daily candles; blocks, so it's called on a worker thread.
 
         Args:
             symbol (str): A tracked symbol.
+            days (int): How many calendar days back to fetch.
 
         Returns:
             Candles: Its daily candles, oldest first.
         """
         with self.lock:
             api = self.api
-        return api.history(symbol)
+        return api.history(symbol, days)
 
     def format_price(self, price: float, currency: str) -> str:
         """

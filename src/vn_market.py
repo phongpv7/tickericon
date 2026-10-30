@@ -1,9 +1,10 @@
 import json
 import threading
+from collections import deque
 from dataclasses import dataclass
 from datetime import date, datetime, time, timedelta
 from time import monotonic
-from typing import Dict, List, Optional, Tuple
+from typing import Deque, Dict, List, Optional, Tuple
 from zoneinfo import ZoneInfo
 
 from curl_cffi import requests
@@ -19,9 +20,17 @@ BOARD_URL = 'https://bgapidatafeed.vps.com.vn/getliststockdata/{codes}'
 # Socket.IO feed behind the same board, pushing every match as it happens
 STREAM_URL = 'wss://bgdatafeed.vps.com.vn/socket.io/?EIO=4&transport=websocket'
 
-# Id of the board's 'stock' event messages describing a match; others carry
-# bids and asks, foreign ownership room, and so on
+# Ids of the board's stream messages: matches (in 'stock' events), and one
+# side's best bids or asks and foreign investors' trading (in 'board' events)
 _MATCH_MESSAGE_ID = 3220
+_BOOK_MESSAGE_ID = 3210
+_FOREIGN_MESSAGE_ID = 3250
+
+# The board counts volume in lots of ten shares, on every exchange
+_SHARES_PER_LOT = 10
+
+# How many of each stock's latest streamed matches are kept
+TRADES_KEPT = 30
 
 VN_TZ = ZoneInfo('Asia/Ho_Chi_Minh')
 
@@ -40,6 +49,10 @@ _SESSIONS = (
 _SESSION_STARTS = (time(9, 0), time(13, 0))
 
 
+# One side of the order book: its best (price in VND, shares) levels, best first
+Levels = Tuple[Tuple[float, float], ...]
+
+
 @dataclass
 class BoardQuote:
     """Latest price board values for one stock, in VND."""
@@ -51,6 +64,14 @@ class BoardQuote:
     day_high: float
     day_low: float
     exchange: str
+    volume: float = 0.0  # shares matched today
+    # Shares foreign investors bought and sold today, and may still buy (their room)
+    foreign_bought: float = 0.0
+    foreign_sold: float = 0.0
+    foreign_room: float = 0.0
+    # The order book's three best bids and asks
+    bids: Levels = ()
+    asks: Levels = ()
 
 
 @dataclass
@@ -60,6 +81,27 @@ class BoardMatch:
     price: float
     day_high: float
     day_low: float
+    volume: float = 0.0  # shares matched today, this match included
+
+
+@dataclass(frozen=True)
+class BoardTrade:
+    """One match streamed from the price board."""
+
+    time: str      # exchange time, 'HH:MM:SS'
+    price: float   # VND
+    volume: float  # shares
+    # 'B' when a buyer took an ask (active buying), 'S' when a seller hit a bid, '' if not given
+    side: str
+
+
+@dataclass
+class BoardForeign:
+    """Foreign investors' trading in one stock today, streamed from the price board."""
+
+    bought: float  # shares
+    sold: float
+    room: float    # shares they may still buy
 
 
 def is_vn_symbol(symbol: str) -> bool:
@@ -148,10 +190,16 @@ class PriceBoard:
             subscribe_message=lambda codes: ['regs', json.dumps({'action': 'join', 'list': ','.join(codes)})],
             on_message=self._on_event,
         )
-        # Latest streamed match per stock code, with when it arrived
-        # (monotonic()) and its trading day, written on the stream's thread
+        # Latest streamed match, order book side, and foreign trading per stock
+        # code (the book's by (code, 'B' or 'S')), each with when it arrived
+        # (monotonic()) and its trading day; and each code's latest matches,
+        # newest last. Written on the stream's thread
         self._matches: Dict[str, Tuple[BoardMatch, float, date]] = {}
-        self._matches_lock = threading.Lock()
+        self._books: Dict[Tuple[str, str], Tuple[Levels, float, date]] = {}
+        self._foreign: Dict[str, Tuple[BoardForeign, float, date]] = {}
+        self._trades: Dict[str, Tuple[Deque[BoardTrade], float, date]] = {}
+        # Reentrant, as streamed_trades copies the trades under it via _streamed
+        self._matches_lock = threading.RLock()
 
     def fetch(self, symbols: List[str]) -> Dict[str, BoardQuote]:
         """
@@ -195,46 +243,130 @@ class PriceBoard:
                 reconnected make older ones stale); symbols without one are
                 left out.
         """
-        if not self._stream.live:
-            return {}
-        today = datetime.now(VN_TZ).date()
+        return self._streamed(self._matches, symbols)
+
+    def streamed_books(self, symbols: List[str]) -> Dict[str, Tuple[Optional[Levels], Optional[Levels]]]:
+        """
+        Args:
+            symbols (List[str]): '.VN' ticker symbols, e.g. ['VHM.VN'].
+
+        Returns:
+            Dict[str, Tuple[Optional[Levels], Optional[Levels]]]: Each symbol's
+                best bids and asks as last streamed, either None where that
+                side hasn't streamed since the stream last connected.
+        """
+        bids = self._streamed(self._books, symbols, side='B')
+        asks = self._streamed(self._books, symbols, side='S')
+        return {symbol: (bids.get(symbol), asks.get(symbol)) for symbol in symbols if symbol in bids or symbol in asks}
+
+    def streamed_foreign(self, symbols: List[str]) -> Dict[str, BoardForeign]:
+        """
+        Args:
+            symbols (List[str]): '.VN' ticker symbols, e.g. ['VHM.VN'].
+
+        Returns:
+            Dict[str, BoardForeign]: Each symbol's foreign trading today, as
+                last streamed since the stream last connected; symbols without
+                any are left out.
+        """
+        return self._streamed(self._foreign, symbols)
+
+    def streamed_trades(self, symbols: List[str]) -> Dict[str, Tuple[BoardTrade, ...]]:
+        """
+        Args:
+            symbols (List[str]): '.VN' ticker symbols, e.g. ['VHM.VN'].
+
+        Returns:
+            Dict[str, Tuple[BoardTrade, ...]]: Each symbol's latest matches
+                today, up to TRADES_KEPT, newest first; symbols without any
+                are left out.
+        """
         with self._matches_lock:
-            matches = dict(self._matches)
-        current = {}
-        for symbol in symbols:
-            entry = matches.get(symbol[:-len(VN_SUFFIX)].upper())
-            if entry is not None and entry[1] >= self._stream.connected_at and entry[2] == today:
-                current[symbol] = entry[0]
-        return current
+            return {symbol: tuple(reversed(trades))
+                    for symbol, trades in self._streamed(self._trades, symbols).items()}
 
     def close(self) -> None:
         """Stops the match stream."""
         self._stream.close()
 
+    def _streamed(self, entries: dict, symbols: List[str], side: Optional[str] = None) -> dict:
+        """
+        Args:
+            entries (dict): Streamed values by stock code (or by code and
+                side, given `side`), each with when it arrived and its day.
+            symbols (List[str]): '.VN' ticker symbols, e.g. ['VHM.VN'].
+            side (Optional[str]): The order book side, for the books.
+
+        Returns:
+            dict: The symbols' values from today that streamed since the
+                stream last connected (values from before it reconnected may
+                have changed unseen).
+        """
+        if not self._stream.live:
+            return {}
+        today = datetime.now(VN_TZ).date()
+        with self._matches_lock:
+            entries = dict(entries)
+        current = {}
+        for symbol in symbols:
+            code = symbol[:-len(VN_SUFFIX)].upper()
+            entry = entries.get(code if side is None else (code, side))
+            if entry is not None and entry[1] >= self._stream.connected_at and entry[2] == today:
+                current[symbol] = entry[0]
+        return current
+
     def _on_event(self, event: str, payload) -> None:
         """
-        Records each streamed match; called on the stream's thread.
+        Records each streamed match, order book change, and foreign trading
+        update; called on the stream's thread.
 
         Args:
             event (str): The Socket.IO event name.
             payload: The event's argument: {'data': {...}} with the board's
-                own fields for 'stock' events, prices in thousands of VND.
+                own fields, prices in thousands of VND and volumes in lots.
         """
-        if event != 'stock' or not isinstance(payload, dict):
+        data = payload.get('data') if isinstance(payload, dict) else None
+        if not isinstance(data, dict):
             return
-        data = payload.get('data')
-        if not isinstance(data, dict) or data.get('id') != _MATCH_MESSAGE_ID:
-            return
+        arrived = (monotonic(), datetime.now(VN_TZ).date())
+        message = (event, data.get('id'))
+        if message == ('board', _BOOK_MESSAGE_ID) and data.get('side') in ('B', 'S'):
+            levels = self._levels(data.get(key) for key in ('g1', 'g2', 'g3'))
+            with self._matches_lock:
+                self._books[(str(data.get('sym', '')).upper(), data['side'])] = (levels, *arrived)
+        elif message == ('board', _FOREIGN_MESSAGE_ID):
+            foreign = BoardForeign(
+                bought=self._lots_to_shares(data.get('fBVol')),
+                sold=self._lots_to_shares(data.get('fSVolume')),
+                room=self._shares(data.get('fRoom')),
+            )
+            with self._matches_lock:
+                self._foreign[str(data.get('symbol', '')).upper()] = (foreign, *arrived)
+        elif message == ('stock', _MATCH_MESSAGE_ID):
+            self._record_match(data, arrived)
+
+    def _record_match(self, data: dict, arrived: Tuple[float, date]) -> None:
+        """Records one streamed match, as the stock's latest and among its recent trades."""
         price = self._thousands_to_vnd(data.get('lastPrice'))
         if price <= 0:
             return
+        code = str(data.get('sym', '')).upper()
         match = BoardMatch(
             price=price,
             day_high=self._thousands_to_vnd(data.get('hp')) or price,
             day_low=self._thousands_to_vnd(data.get('lp')) or price,
+            volume=self._lots_to_shares(data.get('totalVol')),
         )
+        side = data.get('side')
+        trade = BoardTrade(time=str(data.get('time', '')), price=price,
+                           volume=self._lots_to_shares(data.get('lastVol')), side=side if side in ('B', 'S') else '')
         with self._matches_lock:
-            self._matches[str(data.get('sym', '')).upper()] = (match, monotonic(), datetime.now(VN_TZ).date())
+            self._matches[code] = (match, *arrived)
+            trades = self._trades.get(code)
+            if trades is None or trades[2] != arrived[1]:  # a new day starts afresh
+                trades = (deque(maxlen=TRADES_KEPT), *arrived)
+            trades[0].append(trade)
+            self._trades[code] = (trades[0], *arrived)
 
     @staticmethod
     def _parse_quote(item: dict) -> Optional[BoardQuote]:
@@ -262,7 +394,57 @@ class PriceBoard:
             day_high=PriceBoard._thousands_to_vnd(item.get('highPrice')) or price,
             day_low=PriceBoard._thousands_to_vnd(item.get('lowPrice')) or price,
             exchange=_MARKET_NAMES.get(item.get('marketId'), 'HOSE'),
+            volume=PriceBoard._lots_to_shares(item.get('lot')),
+            foreign_bought=PriceBoard._lots_to_shares(item.get('fBVol')),
+            foreign_sold=PriceBoard._lots_to_shares(item.get('fSVolume')),
+            foreign_room=PriceBoard._shares(item.get('fRoom')),
+            bids=PriceBoard._levels(item.get(key) for key in ('g1', 'g2', 'g3')),
+            asks=PriceBoard._levels(item.get(key) for key in ('g4', 'g5', 'g6')),
         )
+
+    @staticmethod
+    def _levels(values) -> Levels:
+        """
+        Args:
+            values: Order book levels as the board writes them,
+                'price|lots|color', e.g. '62.3|90|i', prices in thousands of VND.
+
+        Returns:
+            Levels: The levels with a price, as (VND, shares); auction orders
+                ('ATO', 'ATC') and empty levels are left out.
+        """
+        levels = []
+        for value in values:
+            parts = str(value or '').split('|')
+            price = PriceBoard._thousands_to_vnd(parts[0])
+            if price > 0 and len(parts) > 1:
+                levels.append((price, PriceBoard._lots_to_shares(parts[1])))
+        return tuple(levels)
+
+    @staticmethod
+    def _lots_to_shares(value) -> float:
+        """
+        Args:
+            value: A board volume in lots of ten shares, as a number or string.
+
+        Returns:
+            float: The volume in shares, or 0.0 if missing or malformed.
+        """
+        return PriceBoard._shares(value) * _SHARES_PER_LOT
+
+    @staticmethod
+    def _shares(value) -> float:
+        """
+        Args:
+            value: A number of shares, as a number or string.
+
+        Returns:
+            float: The number, or 0.0 if missing or malformed.
+        """
+        try:
+            return float(value)
+        except (TypeError, ValueError, OverflowError):
+            return 0.0
 
     @staticmethod
     def _thousands_to_vnd(value) -> float:

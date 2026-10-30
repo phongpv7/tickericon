@@ -8,7 +8,12 @@ Prices stream in realtime: Vietnamese stocks from the VPS price board, and crypt
 
 ## Features
 * **Taskbar widget:** Each symbol shows its name, price, and daily change (e.g. `VHM 63.5 +0.79%`) in a normal-size font on a transparent background, then rotates to the next symbol. The widget hides while a full-screen app is running.
-* **Analysis on hover:** Rest the mouse on the prices on the taskbar for a daily chart of the symbol shown: about six months of candles with the 20, 50, and 200-day averages, Bollinger bands, volume, and RSI. Beside it, a technical read-out covers trend, momentum, volatility, volume, support and resistance, the 52-week range, performance from one week to one year, and a technical rating from moving average and oscillator signals. The widget stays on that symbol while the chart is open. The analysis is for reference only, not investment advice.
+* **Analysis on hover (Vietnamese stocks):** Rest the mouse on a Vietnamese stock's price on the taskbar for a popup, in Vietnamese, that follows the market live while it's open (the widget stays on that stock meanwhile):
+  * **Chart:** about six months of daily candles with the 20, 50, and 200-day averages and the Ichimoku cloud (Tenkan, Kijun, Chikou, and the cloud 26 sessions ahead); Bollinger bands and Fibonacci retracements on request (click a chip above the chart to show or hide each overlay); and volume, RSI, stochastic and stochastic RSI (%K and %D), and MACD panels.
+  * **Order book and matches:** the three best bids and asks with their volumes and how they weigh against each other, the latest active buy and sell, and the latest matches, each marked as active buying (M) or selling (B).
+  * **Analysis:** a TradingView-style technical rating from moving average and oscillator signals, with findings on trend, the Ichimoku cloud, trend strength (ADX), momentum, volatility, volume and money flow (MFI), foreign investors' trading, candlestick patterns, support and resistance, Fibonacci levels, and performance; the **Chỉ báo** tab lists every indicator behind the rating with its value and signal.
+
+  International symbols are there to keep an eye on and have no popup. The analysis is for reference only, not investment advice.
 * **Vietnamese price board colors:** Ceiling (purple), up (green), reference (yellow), down (red), and floor (blue), with prices in thousands of VND like on local price boards. A price that failed to refresh turns gray.
 * **Realtime Vietnamese stocks:** HOSE, HNX, and UPCoM stocks stream from the VPS price board as each match happens during trading sessions; while the stream is down, the board is polled every second instead.
 * **Realtime world markets:** Crypto, gold, silver, oil, natural gas, and US and Asian stocks stream from Binance trade by trade, converted from USDT to US dollars, with the daily change measured from midnight Vietnam time.
@@ -88,7 +93,7 @@ With the taskbar widget turned off, the prices go back into the tray icon itself
 
 After you save your changes, TickerIcon reloads the configuration automatically. Configuration files from older versions are read transparently and upgraded to the new format on the next save.
 
-The settings are kept in `%LOCALAPPDATA%\TickerIcon\config.cfg`, apart from the program, so reinstalling or uninstalling TickerIcon (or deleting a source checkout) keeps them. On its first run, TickerIcon copies the `config.cfg` that ships next to the program there; settings that older versions saved next to the program carry over the same way.
+The settings are kept in `%LOCALAPPDATA%\TickerIcon\config.cfg`, apart from the program, so reinstalling or uninstalling TickerIcon (or deleting a source checkout) keeps them. The analysis popup remembers which chart overlays and which tab were last chosen in `chart.json` beside it. On its first run, TickerIcon copies the `config.cfg` that ships next to the program there; settings that older versions saved next to the program carry over the same way.
 
 ## Running on Startup
 Choose **Start TickerIcon when I sign in to Windows** during installation if you want it to launch automatically at sign-in. If you skipped that option, run the latest installer again and enable the startup option.

@@ -1,7 +1,7 @@
 import time
 from dataclasses import dataclass, replace
 from datetime import datetime
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Tuple
 from zoneinfo import ZoneInfo
 
 from src import price_history, vn_market, world_market
@@ -12,10 +12,10 @@ from src import price_history, vn_market, world_market
 REALTIME_FETCH_INTERVAL_S = 0.25
 
 # Seconds between price board polls during sessions: every second until its
-# stream has carried a match for every symbol, then only to refresh the
-# reference, ceiling, and floor prices
+# stream has carried a match for every symbol, then for what the stream
+# doesn't carry, chiefly foreign investors' trading
 PRICE_BOARD_INTERVAL_S = 1
-STREAMED_PRICE_BOARD_INTERVAL_S = 60
+STREAMED_PRICE_BOARD_INTERVAL_S = 10
 
 # Seconds between price board polls outside its sessions, and between
 # fetches while no tracked market is open
@@ -38,6 +38,18 @@ class StockData:
     # Daily price limits; 0 for exchanges that don't publish them (only Vietnam's do)
     ceiling: float = 0.0
     floor: float = 0.0
+    # Shares traded today; 0 where unknown (Binance's day doesn't match its daily candles')
+    volume: float = 0.0
+    # Vietnamese stocks only: the shares foreign investors bought and sold
+    # today, and may still buy (their room); the order book's three best
+    # bids and asks, as (price, shares), best first; and the latest matches,
+    # newest first
+    foreign_bought: float = 0.0
+    foreign_sold: float = 0.0
+    foreign_room: float = 0.0
+    bids: vn_market.Levels = ()
+    asks: vn_market.Levels = ()
+    trades: Tuple[vn_market.BoardTrade, ...] = ()
     next_open: Optional[datetime] = None
     has_error: bool = False
 
@@ -90,20 +102,21 @@ class MarketAPI:
         self.price_board.close()
         self.world_ticker.close()
 
-    def history(self, symbol: str) -> price_history.Candles:
+    def history(self, symbol: str, days: int = price_history.HISTORY_DAYS) -> price_history.Candles:
         """
-        Fetches about a year of daily candles for one symbol (see
-        price_history.fetch_history), in the currency its quotes use. Blocks
-        on the network, and safe to call from any thread.
+        Fetches a Vietnamese stock's daily candles (see
+        price_history.fetch_history). Blocks on the network, and safe to call
+        from any thread.
 
         Args:
-            symbol (str): A tracked symbol, e.g. 'VHM.VN' or 'XAU'.
+            symbol (str): A '.VN' symbol, e.g. 'VHM.VN'.
+            days (int): How many days back to fetch: about a year by
+                default, or just the latest few to bring them up to date.
 
         Returns:
             price_history.Candles: Its daily candles, oldest first.
         """
-        return price_history.fetch_history(symbol, usdt_per_usd=self.world_ticker.usdt_per_usd,
-                                           futures=self.world_ticker.is_futures(symbol))
+        return price_history.fetch_history(symbol, days=days)
 
     def fetch_all(self, previous: Optional[Dict[str, StockData]] = None) -> Dict[str, StockData]:
         """
@@ -224,6 +237,9 @@ class MarketAPI:
         state = vn_market.session_state(now)
         next_open = vn_market.next_session_start(now)
         matches = self.price_board.streamed_matches(symbols)
+        books = self.price_board.streamed_books(symbols)
+        foreign_trading = self.price_board.streamed_foreign(symbols)
+        trades = self.price_board.streamed_trades(symbols)
         if self._price_board_due(state, streamed=len(matches) == len(symbols)):
             self._price_board_fetched_at = time.monotonic()
             try:
@@ -241,13 +257,21 @@ class MarketAPI:
                     state=state, currency='VND', next_open=next_open,
                 )
                 continue
-            price, day_high, day_low = quote.price, quote.day_high, quote.day_low
+            price, day_high, day_low, volume = quote.price, quote.day_high, quote.day_low, quote.volume
             match = matches.get(symbol)
             # Stocks only trade within the day's limits; a match outside them was misread
             if match is not None and quote.floor <= match.price <= quote.ceiling:
                 price, day_high, day_low = match.price, max(day_high, match.day_high), min(day_low, match.day_low)
+                volume = max(volume, match.volume)
             else:
                 match = None
+            # The stream pushes every change to the book and to foreign trading,
+            # so what it carried is current; the board's poll fills in the rest
+            bids, asks = books.get(symbol, (None, None))
+            bought, sold, room = quote.foreign_bought, quote.foreign_sold, quote.foreign_room
+            foreign = foreign_trading.get(symbol)
+            if foreign is not None:
+                bought, sold, room = max(bought, foreign.bought), max(sold, foreign.sold), foreign.room or room
             snapshot[symbol] = StockData(
                 symbol=symbol,
                 price=price,
@@ -260,6 +284,13 @@ class MarketAPI:
                 currency='VND',
                 ceiling=quote.ceiling,
                 floor=quote.floor,
+                volume=volume,
+                foreign_bought=bought,
+                foreign_sold=sold,
+                foreign_room=room,
+                bids=quote.bids if bids is None else bids,
+                asks=quote.asks if asks is None else asks,
+                trades=trades.get(symbol, ()),
                 next_open=next_open,
                 # A streamed match is current even while the board's REST feed is down
                 has_error=self._board_failed and match is None,

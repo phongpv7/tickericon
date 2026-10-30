@@ -167,26 +167,6 @@ class WorldTicker:
             day_low=min(pair.day.day_low, price) / rate,
         )
 
-    def is_futures(self, symbol: str) -> bool:
-        """
-        Args:
-            symbol (str): A configured symbol, e.g. 'XAU'.
-
-        Returns:
-            bool: True once its prices are known to come from the futures market.
-        """
-        pair = self._pairs.get(base_asset(symbol) + QUOTE_ASSET)
-        return pair is not None and pair.market == FUTURES
-
-    @property
-    def usdt_per_usd(self) -> float:
-        """
-        Returns:
-            float: How many USDT a dollar buys, as last fetched (1 until then);
-                reading it never sends a request, so any thread may.
-        """
-        return self._usd_rate[0]
-
     def close(self) -> None:
         """Stops the trade streams."""
         for stream in self._streams.values():
