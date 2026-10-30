@@ -71,18 +71,25 @@ def use_windows_trust_store(bundle_path: Optional[Path] = None) -> Optional[Path
         return None
 
     bundle_path = bundle_path or _default_bundle_path()
+    # Write-then-rename so a process reading the bundle never sees half of it
+    tmp_path = bundle_path.with_name(f'{bundle_path.name}.{os.getpid()}.tmp')
     try:
         with open(certifi.where(), encoding='utf-8') as file:
             certifi_pems = file.read()
         contents = certifi_pems.rstrip('\n') + '\n' + ''.join(_windows_store_pems())
 
         bundle_path.parent.mkdir(parents=True, exist_ok=True)
-        # Write-then-rename so a second running instance never reads a half-written file
-        tmp_path = bundle_path.with_name(f'{bundle_path.name}.{os.getpid()}.tmp')
         tmp_path.write_text(contents, encoding='utf-8')
         os.replace(tmp_path, bundle_path)
     except OSError:
-        return None
+        # Windows can't replace a file another process has open, e.g. an
+        # antivirus scan; the bundle written last time trusts the same CAs
+        try:
+            tmp_path.unlink(missing_ok=True)
+        except OSError:
+            pass
+        if not bundle_path.exists():
+            return None
 
     os.environ['CURL_CA_BUNDLE'] = str(bundle_path)
     return bundle_path
