@@ -41,11 +41,13 @@ class StockData:
     # Shares traded today; 0 where unknown (Binance's day doesn't match its daily candles')
     volume: float = 0.0
     # Vietnamese stocks only: the shares foreign investors bought and sold
-    # today, and may still buy (their room); the order book's three best
-    # bids and asks, as (price, shares), best first; and the latest matches,
-    # newest first
+    # today, what they paid and got for them, and the shares they may still
+    # buy (their room); the order book's three best bids and asks, as
+    # (price, shares), best first; and the latest matches, newest first
     foreign_bought: float = 0.0
     foreign_sold: float = 0.0
+    foreign_bought_value: float = 0.0
+    foreign_sold_value: float = 0.0
     foreign_room: float = 0.0
     bids: vn_market.Levels = ()
     asks: vn_market.Levels = ()
@@ -269,9 +271,13 @@ class MarketAPI:
             # so what it carried is current; the board's poll fills in the rest
             bids, asks = books.get(symbol, (None, None))
             bought, sold, room = quote.foreign_bought, quote.foreign_sold, quote.foreign_room
+            bought_value, sold_value = quote.foreign_bought_value, quote.foreign_sold_value
             foreign = foreign_trading.get(symbol)
             if foreign is not None:
-                bought, sold, room = max(bought, foreign.bought), max(sold, foreign.sold), foreign.room or room
+                # Today's totals only grow, so the larger of the poll's and the stream's is the later
+                bought, sold = max(bought, foreign.bought), max(sold, foreign.sold)
+                bought_value, sold_value = max(bought_value, foreign.bought_value), max(sold_value, foreign.sold_value)
+                room = foreign.room
             snapshot[symbol] = StockData(
                 symbol=symbol,
                 price=price,
@@ -287,6 +293,8 @@ class MarketAPI:
                 volume=volume,
                 foreign_bought=bought,
                 foreign_sold=sold,
+                foreign_bought_value=bought_value,
+                foreign_sold_value=sold_value,
                 foreign_room=room,
                 bids=quote.bids if bids is None else bids,
                 asks=quote.asks if asks is None else asks,

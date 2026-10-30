@@ -31,8 +31,9 @@ else:  # the popup is Windows-only, like the widget it belongs to
 _GWL_EXSTYLE = -20
 _WS_EX_NOACTIVATE = 0x08000000
 
-# Hover this long before the popup opens, and leave it this long before it
-# closes; while the widget shows a symbol without analysis (an international
+# Hover this long before the popup opens, and move the mouse off both the
+# widget and the popup for this long before it closes (checked on every
+# redraw); while the widget shows a symbol without analysis (an international
 # one), hovering checks again this often for a Vietnamese stock to come round
 SHOW_DELAY_MS = 350
 HIDE_DELAY_MS = 400
@@ -79,7 +80,7 @@ MACD_TOP, MACD_BOTTOM = 506, 550
 MONTHS_Y = 564
 # The order book and latest matches, right of the chart
 BOOK_LEFT, BOOK_RIGHT = CHART_RIGHT + AXIS_WIDTH + 28, CHART_RIGHT + AXIS_WIDTH + 252
-TRADE_ROWS = 16
+TRADE_ROWS = 10
 # The rating and analysis, right of the order book: topics, then their findings
 NOTES_LEFT = BOOK_RIGHT + 28
 TOPIC_WIDTH = 124
@@ -195,11 +196,14 @@ class AnalysisPopup:
         self._canvas = None
         self._symbol: Optional[str] = None
         self._shown = False
-        self._over_widget = False
-        self._over_popup = False
         self._overlays, self._tab = _load_preferences()
-        # The widget's right edge and the taskbar's top and bottom, to place the popup by
-        self._anchor: Optional[Tuple[int, int, int]] = None
+        # The widget's (left, top, right, bottom) on screen, its top and bottom
+        # being the taskbar's, to place the popup by; and the popup's own
+        # (left, top, right, bottom) while shown
+        self._anchor: Optional[Tuple[int, int, int, int]] = None
+        self._placed: Optional[Tuple[int, int, int, int]] = None
+        # Since when the mouse has been off the widget and the popup (time.monotonic())
+        self._away_since: Optional[float] = None
         self._height = PRICE_BOTTOM
         self._geometry: Optional[str] = None
         self._redraw_job = None
@@ -216,14 +220,15 @@ class AnalysisPopup:
         # (symbol, days fetched, candles or error) from the worker threads
         self._results: queue.Queue = queue.Queue()
 
-    def set_anchor(self, right: int, taskbar_top: int, taskbar_bottom: int) -> None:
+    def set_anchor(self, left: int, top: int, right: int, bottom: int) -> None:
         """
         Args:
-            right (int): The widget's right edge, which the popup lines up with.
-            taskbar_top (int): The taskbar's top edge.
-            taskbar_bottom (int): The taskbar's bottom edge.
+            left (int): The widget's left edge.
+            top (int): Its top edge, the taskbar's.
+            right (int): Its right edge, which the popup lines up with.
+            bottom (int): Its bottom edge, the taskbar's.
         """
-        self._anchor = (right, taskbar_top, taskbar_bottom)
+        self._anchor = (left, top, right, bottom)
 
     def prepare(self) -> None:
         """
@@ -241,8 +246,6 @@ class AnalysisPopup:
         canvas = tk.Canvas(window, width=WIDTH, height=self._height, bg=BACKGROUND,
                            highlightthickness=0, borderwidth=0)
         canvas.pack(fill='both', expand=True)
-        canvas.bind('<Enter>', self._popup_entered)
-        canvas.bind('<Leave>', self._popup_left)
         # The overlay chips and the tabs are clickable
         clickable = [(f'chip-{overlay}', lambda overlay=overlay: self._toggle_overlay(overlay)) for overlay in OVERLAYS]
         clickable += [(f'tab-{tab}', lambda tab=tab: self._select_tab(tab)) for tab, _ in TABS]
@@ -259,15 +262,9 @@ class AnalysisPopup:
         self._window, self._canvas = window, canvas
 
     def widget_entered(self) -> None:
-        """Opens the popup after SHOW_DELAY_MS, unless the mouse leaves first."""
-        self._over_widget = True
+        """Opens the popup after SHOW_DELAY_MS, if the mouse is still on the widget then."""
         if not self._shown:
             self.root.after(SHOW_DELAY_MS, self._show_if_hovered)
-
-    def widget_left(self) -> None:
-        """Closes the popup after HIDE_DELAY_MS, unless the mouse comes back."""
-        self._over_widget = False
-        self.root.after(HIDE_DELAY_MS, self._hide_if_left)
 
     def hide(self) -> None:
         """Moves the popup out of sight and lets the widget rotate again."""
@@ -275,21 +272,14 @@ class AnalysisPopup:
             return
         self._shown = False
         self._window.geometry(f"+{_OFFSCREEN}+{_OFFSCREEN}")
-        self._geometry = self._drawn = None
+        self._geometry = self._drawn = self._placed = self._away_since = None
         if self._redraw_job is not None:
             self.root.after_cancel(self._redraw_job)
             self._redraw_job = None
         self.source.unpin_symbol()
 
-    def _popup_entered(self, _event) -> None:
-        self._over_popup = True
-
-    def _popup_left(self, _event) -> None:
-        self._over_popup = False
-        self.root.after(HIDE_DELAY_MS, self._hide_if_left)
-
     def _show_if_hovered(self) -> None:
-        if not self._over_widget or self._shown or self._anchor is None:
+        if self._shown or self._anchor is None or not self._mouse_on_widget():
             return
         symbol = self.source.pin_symbol()
         if symbol is None:
@@ -301,9 +291,35 @@ class AnalysisPopup:
         self._shown = True
         self._redraw()
 
-    def _hide_if_left(self) -> None:
-        if not self._over_widget and not self._over_popup:
-            self.hide()
+    def _mouse_on_widget(self) -> bool:
+        """Whether the mouse is anywhere on the widget, its keyed-out background included."""
+        x, y = self.root.winfo_pointerxy()
+        left, top, right, bottom = self._anchor
+        return left <= x < right and top <= y < bottom
+
+    def _mouse_gone(self) -> bool:
+        """
+        Tracks the mouse from where it actually is, rather than from enter
+        and leave events, which Windows doesn't always deliver for windows
+        with a keyed-out background, or that never take the focus.
+
+        Returns:
+            bool: True once the mouse has been off the widget, the popup, and
+                the gap between them for HIDE_DELAY_MS.
+        """
+        x, y = self.root.winfo_pointerxy()
+        near = self._mouse_on_widget()
+        if not near and self._placed is not None:
+            # The popup, stretched over the gap separating it from the taskbar
+            left, top, right, bottom = self._placed
+            taskbar_top, taskbar_bottom = self._anchor[1], self._anchor[3]
+            near = left <= x < right and min(top, taskbar_bottom) <= y < max(bottom, taskbar_top)
+        if near:
+            self._away_since = None
+            return False
+        if self._away_since is None:
+            self._away_since = time.monotonic()
+        return time.monotonic() - self._away_since >= HIDE_DELAY_MS / 1000
 
     def _toggle_overlay(self, overlay: str) -> None:
         """Shows or hides one of the chart's overlays, remembering the choice."""
@@ -326,10 +342,14 @@ class AnalysisPopup:
         """
         Redraws the open popup whenever its quote, order book, matches, or
         candles have changed, so the chart and the analysis follow the market
-        as it trades, then schedules the next check.
+        as it trades, then schedules the next check; closes it instead once
+        the mouse has gone.
         """
         self._redraw_job = None
         if not self._shown:
+            return
+        if self._mouse_gone():
+            self.hide()
             return
         self._collect_results()
         data, name = self.source.symbol_quote(self._symbol)
@@ -346,12 +366,13 @@ class AnalysisPopup:
         Puts the popup right-aligned with the widget, just above the taskbar,
         or just below it when the taskbar is at the top of the screen.
         """
-        right, taskbar_top, taskbar_bottom = self._anchor
+        _, taskbar_top, right, taskbar_bottom = self._anchor
         x = max(0, right - WIDTH)
         if taskbar_top > self.root.winfo_screenheight() / 2:
             y = max(0, taskbar_top - self._height - 8)
         else:
             y = taskbar_bottom + 8
+        self._placed = (x, y, x + WIDTH, y + self._height)
         geometry = f"{WIDTH}x{self._height}+{x}+{y}"
         if geometry != self._geometry:
             self._geometry = geometry
@@ -435,7 +456,8 @@ class AnalysisPopup:
         if isinstance(candles, Candles) and len(candles) >= 2:
             try:
                 candles = with_live_price(candles, data.price, data.volume)
-                foreign = (data.foreign_bought, data.foreign_sold, data.foreign_room)
+                foreign = (data.foreign_bought, data.foreign_sold, data.foreign_room,
+                           data.foreign_bought_value, data.foreign_sold_value)
                 analysis = technical.analyze(candles, format_price, foreign=foreign if any(foreign) else None,
                                              session_open=data.state != 'closed')
                 self._draw_chart(candles, analysis, format_price, price_color)
@@ -523,8 +545,9 @@ class AnalysisPopup:
     def _draw_book(self, data: StockData, format_price: Callable[[float], str]) -> int:
         """
         Draws the order book's three best bids and asks, how they weigh
-        against each other, the latest active buy and sell, and the latest
-        matches, like the price board shows them.
+        against each other, foreign investors' trading and room, the latest
+        active buy and sell, and the latest matches, like the price board
+        shows them.
 
         Returns:
             int: The y coordinate below what was drawn.
@@ -572,6 +595,25 @@ class AnalysisPopup:
                                    text=f"Dư {more} gấp {max(bid_total, ask_total) / min(bid_total, ask_total):.1f} "
                                         f"lần dư {fewer}")
         y += 50
+
+        # Foreign investors' trading today and the room they have left, like the board's foreign columns
+        canvas.create_text(left, y, anchor='nw', fill=TEXT, font=BOLD, text='Khối ngoại')
+        y += 22
+        net, net_value = data.foreign_bought - data.foreign_sold, data.foreign_bought_value - data.foreign_sold_value
+        for label, color, shares, value in (
+                ('Mua', UP, data.foreign_bought, data.foreign_bought_value),
+                ('Bán', DOWN, data.foreign_sold, data.foreign_sold_value),
+                ('Mua ròng' if net >= 0 else 'Bán ròng', UP if net > 0 else DOWN if net < 0 else MUTED,
+                 abs(net), abs(net_value))):
+            canvas.create_text(left, y, anchor='nw', fill=color, font=SMALL, text=label)
+            canvas.create_text(right, y, anchor='ne', fill=TEXT, font=SMALL,
+                               text=f"{volume_text(shares)} cp" + (f" · {technical.compact(value)} đ" if value else ''))
+            y += 16
+        canvas.create_text(left, y, anchor='nw', fill=MUTED, font=SMALL, text='Room còn lại')
+        canvas.create_text(right, y, anchor='ne', fill=TEXT, font=SMALL,
+                           text=f"{volume_text(data.foreign_room)} cp" if data.foreign_room > 0
+                           else 'Hết room' if data.prev_close > 0 else '—')
+        y += 26
 
         canvas.create_text(left, y, anchor='nw', fill=TEXT, font=BOLD, text='Khớp lệnh')
         if data.trades:

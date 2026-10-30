@@ -65,9 +65,12 @@ class BoardQuote:
     day_low: float
     exchange: str
     volume: float = 0.0  # shares matched today
-    # Shares foreign investors bought and sold today, and may still buy (their room)
+    # Shares foreign investors bought and sold today, what they paid and got
+    # for them (VND), and the shares they may still buy (their room)
     foreign_bought: float = 0.0
     foreign_sold: float = 0.0
+    foreign_bought_value: float = 0.0
+    foreign_sold_value: float = 0.0
     foreign_room: float = 0.0
     # The order book's three best bids and asks
     bids: Levels = ()
@@ -101,6 +104,8 @@ class BoardForeign:
 
     bought: float  # shares
     sold: float
+    bought_value: float  # VND
+    sold_value: float
     room: float    # shares they may still buy
 
 
@@ -338,6 +343,8 @@ class PriceBoard:
             foreign = BoardForeign(
                 bought=self._lots_to_shares(data.get('fBVol')),
                 sold=self._lots_to_shares(data.get('fSVolume')),
+                bought_value=self._thousands_to_vnd(data.get('fBValue')),
+                sold_value=self._thousands_to_vnd(data.get('fSValue')),
                 room=self._shares(data.get('fRoom')),
             )
             with self._matches_lock:
@@ -397,6 +404,8 @@ class PriceBoard:
             volume=PriceBoard._lots_to_shares(item.get('lot')),
             foreign_bought=PriceBoard._lots_to_shares(item.get('fBVol')),
             foreign_sold=PriceBoard._lots_to_shares(item.get('fSVolume')),
+            foreign_bought_value=PriceBoard._thousands_to_vnd(item.get('fBValue')),
+            foreign_sold_value=PriceBoard._thousands_to_vnd(item.get('fSValue')),
             foreign_room=PriceBoard._shares(item.get('fRoom')),
             bids=PriceBoard._levels(item.get(key) for key in ('g1', 'g2', 'g3')),
             asks=PriceBoard._levels(item.get(key) for key in ('g4', 'g5', 'g6')),

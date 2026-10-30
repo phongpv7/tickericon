@@ -529,7 +529,8 @@ def support_resistance(candles: Candles, price: float, window: int = 5, lookback
 
 
 def analyze(candles: Candles, format_price: Callable[[float], str],
-            foreign: Optional[Tuple[float, float, float]] = None, session_open: bool = False) -> Analysis:
+            foreign: Optional[Tuple[float, float, float, float, float]] = None,
+            session_open: bool = False) -> Analysis:
     """
     Reads daily candles the way a technical analyst would: trend, the
     Ichimoku cloud, trend strength, momentum, volatility, volume, candlestick
@@ -540,9 +541,10 @@ def analyze(candles: Candles, format_price: Callable[[float], str],
     Args:
         candles (Candles): Daily candles, oldest first, the last one current.
         format_price (Callable[[float], str]): Formats a price for the notes.
-        foreign (Optional[Tuple[float, float, float]]): For Vietnamese stocks,
-            the shares foreign investors bought and sold today, and the
-            shares they may still buy (the foreign room).
+        foreign (Optional[Tuple[float, float, float, float, float]]): For
+            Vietnamese stocks, the shares foreign investors bought and sold
+            today, the shares they may still buy (the foreign room), and
+            what they paid and got for the shares (VND, 0 if unknown).
         session_open (bool): Whether the last candle is still forming.
 
     Returns:
@@ -913,7 +915,7 @@ def _volume_note(candles: Candles, mfi14: Series) -> Optional[str]:
     if average <= 0:
         return None
     ratio = volumes[-1] / average
-    text = f"Hôm nay {_compact(volumes[-1])}, bằng {ratio:.1f} lần trung bình 20 phiên"
+    text = f"Hôm nay {compact(volumes[-1])}, bằng {ratio:.1f} lần trung bình 20 phiên"
     if ratio >= 1.5 and closes[-1] != closes[-2]:
         text += ', lực mua mạnh' if closes[-1] > closes[-2] else ', lực bán mạnh'
     text += '.'
@@ -925,20 +927,23 @@ def _volume_note(candles: Candles, mfi14: Series) -> Optional[str]:
     return text
 
 
-def _foreign_note(foreign: Tuple[float, float, float], price: float) -> Optional[str]:
-    bought, sold, room = foreign
+def _foreign_note(foreign: Tuple[float, float, float, float, float], price: float) -> Optional[str]:
+    bought, sold, room, bought_value, sold_value = foreign
     net = bought - sold
     if bought or sold:
-        text = f"Hôm nay mua {_compact(bought)}, bán {_compact(sold)} cổ phiếu"
+        text = f"Hôm nay mua {compact(bought)}, bán {compact(sold)} cổ phiếu"
         if net:
-            text += (f": {'mua' if net > 0 else 'bán'} ròng {_compact(abs(net))} cổ phiếu "
-                     f"(khoảng {_compact(abs(net) * price)} đồng).")
+            # What the board reports they paid and got, else the shares at today's price
+            net_value = abs(bought_value - sold_value) if bought_value or sold_value else abs(net) * price
+            text += f": {'mua' if net > 0 else 'bán'} ròng {compact(abs(net))} cổ phiếu ({compact(net_value)} đồng)."
         else:
             text += ': mua bán cân bằng.'
     else:
         text = 'Hôm nay khối ngoại chưa giao dịch.'
     if room > 0:
-        text += f" Room còn {_compact(room)} cổ phiếu."
+        text += f" Room còn {compact(room)} cổ phiếu."
+    elif bought or sold:
+        text += ' Đã hết room.'
     return text
 
 
@@ -1011,7 +1016,7 @@ def _performance_note(candles: Candles) -> Optional[str]:
     return '   '.join(changes) or None
 
 
-def _compact(value: float) -> str:
+def compact(value: float) -> str:
     """4,320,000 -> '4.3 triệu'."""
     for size, unit in ((1e9, 'tỷ'), (1e6, 'triệu'), (1e3, 'nghìn')):
         if value >= size:

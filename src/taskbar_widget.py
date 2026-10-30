@@ -188,9 +188,9 @@ class TaskbarWidget:
         if self.analysis is not None:
             self._popup = AnalysisPopup(root, self.analysis)
             self._popup.prepare()
-            # Only the text's pixels catch the mouse; the keyed-out background lets it through
+            # Only the text's pixels catch the mouse (the keyed-out background
+            # lets it through); the popup itself then follows where the mouse goes
             self._canvas.bind('<Enter>', lambda event: self._popup.widget_entered())
-            self._canvas.bind('<Leave>', lambda event: self._popup.widget_left())
         self._tick()
         root.mainloop()
 
@@ -238,7 +238,7 @@ class TaskbarWidget:
             self._geometry = geometry
             self._root.geometry(geometry)
         if self._popup is not None:
-            self._popup.set_anchor(left + self._width, top, bottom)
+            self._popup.set_anchor(left, top, left + self._width, bottom)
 
         if not self._visible:
             self._visible = True
