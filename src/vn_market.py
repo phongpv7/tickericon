@@ -1,10 +1,9 @@
 import json
 import threading
-from collections import deque
 from dataclasses import dataclass
 from datetime import date, datetime, time, timedelta
 from time import monotonic
-from typing import Deque, Dict, List, Optional, Tuple
+from typing import Dict, List, Optional, Tuple
 from zoneinfo import ZoneInfo
 
 from curl_cffi import requests
@@ -28,9 +27,6 @@ _FOREIGN_MESSAGE_ID = 3250
 
 # The board counts volume in lots of ten shares, on every exchange
 _SHARES_PER_LOT = 10
-
-# How many of each stock's latest streamed matches are kept
-TRADES_KEPT = 30
 
 VN_TZ = ZoneInfo('Asia/Ho_Chi_Minh')
 
@@ -85,17 +81,6 @@ class BoardMatch:
     day_high: float
     day_low: float
     volume: float = 0.0  # shares matched today, this match included
-
-
-@dataclass(frozen=True)
-class BoardTrade:
-    """One match streamed from the price board."""
-
-    time: str      # exchange time, 'HH:MM:SS'
-    price: float   # VND
-    volume: float  # shares
-    # 'B' when a buyer took an ask (active buying), 'S' when a seller hit a bid, '' if not given
-    side: str
 
 
 @dataclass
@@ -197,14 +182,11 @@ class PriceBoard:
         )
         # Latest streamed match, order book side, and foreign trading per stock
         # code (the book's by (code, 'B' or 'S')), each with when it arrived
-        # (monotonic()) and its trading day; and each code's latest matches,
-        # newest last. Written on the stream's thread
+        # (monotonic()) and its trading day. Written on the stream's thread
         self._matches: Dict[str, Tuple[BoardMatch, float, date]] = {}
         self._books: Dict[Tuple[str, str], Tuple[Levels, float, date]] = {}
         self._foreign: Dict[str, Tuple[BoardForeign, float, date]] = {}
-        self._trades: Dict[str, Tuple[Deque[BoardTrade], float, date]] = {}
-        # Reentrant, as streamed_trades copies the trades under it via _streamed
-        self._matches_lock = threading.RLock()
+        self._matches_lock = threading.Lock()
 
     def fetch(self, symbols: List[str]) -> Dict[str, BoardQuote]:
         """
@@ -276,20 +258,6 @@ class PriceBoard:
         """
         return self._streamed(self._foreign, symbols)
 
-    def streamed_trades(self, symbols: List[str]) -> Dict[str, Tuple[BoardTrade, ...]]:
-        """
-        Args:
-            symbols (List[str]): '.VN' ticker symbols, e.g. ['VHM.VN'].
-
-        Returns:
-            Dict[str, Tuple[BoardTrade, ...]]: Each symbol's latest matches
-                today, up to TRADES_KEPT, newest first; symbols without any
-                are left out.
-        """
-        with self._matches_lock:
-            return {symbol: tuple(reversed(trades))
-                    for symbol, trades in self._streamed(self._trades, symbols).items()}
-
     def close(self) -> None:
         """Stops the match stream."""
         self._stream.close()
@@ -353,27 +321,18 @@ class PriceBoard:
             self._record_match(data, arrived)
 
     def _record_match(self, data: dict, arrived: Tuple[float, date]) -> None:
-        """Records one streamed match, as the stock's latest and among its recent trades."""
+        """Records one streamed match as the stock's latest."""
         price = self._thousands_to_vnd(data.get('lastPrice'))
         if price <= 0:
             return
-        code = str(data.get('sym', '')).upper()
         match = BoardMatch(
             price=price,
             day_high=self._thousands_to_vnd(data.get('hp')) or price,
             day_low=self._thousands_to_vnd(data.get('lp')) or price,
             volume=self._lots_to_shares(data.get('totalVol')),
         )
-        side = data.get('side')
-        trade = BoardTrade(time=str(data.get('time', '')), price=price,
-                           volume=self._lots_to_shares(data.get('lastVol')), side=side if side in ('B', 'S') else '')
         with self._matches_lock:
-            self._matches[code] = (match, *arrived)
-            trades = self._trades.get(code)
-            if trades is None or trades[2] != arrived[1]:  # a new day starts afresh
-                trades = (deque(maxlen=TRADES_KEPT), *arrived)
-            trades[0].append(trade)
-            self._trades[code] = (trades[0], *arrived)
+            self._matches[str(data.get('sym', '')).upper()] = (match, *arrived)
 
     @staticmethod
     def _parse_quote(item: dict) -> Optional[BoardQuote]:

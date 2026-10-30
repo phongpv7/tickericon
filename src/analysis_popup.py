@@ -4,7 +4,7 @@ import queue
 import sys
 import threading
 import time
-from typing import Callable, Dict, FrozenSet, Optional, Protocol, Sequence, Set, Tuple, Union
+from typing import Callable, Dict, FrozenSet, List, Optional, Protocol, Sequence, Set, Tuple, Union
 
 try:
     import tkinter as tk
@@ -53,11 +53,14 @@ RECENT_REFRESH_S = 10
 # Daily candles on the chart: about six months, the span the Fibonacci swing is taken from
 VISIBLE_CANDLES = technical.FIBONACCI_LOOKBACK
 
-# The chart's optional overlays, each shown or hidden by clicking its chip
-# above the chart, and the analysis column's tabs; the choices are kept in
-# PREFERENCES_FILE in the app data folder
+# The chart's optional overlays and the indicator panels below it, each shown
+# or hidden by clicking its chip, and the analysis column's tabs; the choices
+# are kept in PREFERENCES_FILE in the app data folder. The stochastics mostly
+# repeat what RSI says, only quicker, so they start hidden
 OVERLAYS = ('ma', 'bollinger', 'ichimoku', 'fibonacci')
 DEFAULT_OVERLAYS = frozenset({'ma', 'ichimoku'})
+PANELS = ('rsi', 'stochastic', 'stochastic_rsi', 'macd')
+DEFAULT_PANELS = frozenset({'rsi', 'macd'})
 TABS = (('notes', 'Nhận định'), ('indicators', 'Chỉ báo'))
 PREFERENCES_FILE = 'chart.json'
 
@@ -66,21 +69,19 @@ _OFFSCREEN = -10000
 
 WIDTH = 1560
 PAD = 16
-# The chart's rows, top to bottom: overlay chips, prices, volume, RSI,
-# stochastic, stochastic RSI, MACD, month labels
+# The chart's rows, top to bottom: overlay chips, prices, volume, panel
+# chips, the panels shown (each PANEL_GAP below the one before, its title
+# in the gap), and the month labels
 CHART_LEFT, CHART_RIGHT = PAD, 640
 AXIS_WIDTH = 56
 CHIPS_TOP = 60
 PRICE_TOP, PRICE_BOTTOM = 92, 290
 VOLUME_TOP, VOLUME_BOTTOM = 298, 330
-RSI_TOP, RSI_BOTTOM = 344, 384
-STOCHASTIC_TOP, STOCHASTIC_BOTTOM = 398, 438
-STOCHASTIC_RSI_TOP, STOCHASTIC_RSI_BOTTOM = 452, 492
-MACD_TOP, MACD_BOTTOM = 506, 550
-MONTHS_Y = 564
-# The order book and latest matches, right of the chart
+PANEL_CHIPS_TOP = 338
+PANELS_TOP = PANEL_CHIPS_TOP + 18
+PANEL_GAP, PANEL_HEIGHT = 14, 40
+# The order book and foreign trading, right of the chart
 BOOK_LEFT, BOOK_RIGHT = CHART_RIGHT + AXIS_WIDTH + 28, CHART_RIGHT + AXIS_WIDTH + 252
-TRADE_ROWS = 10
 # The rating and analysis, right of the order book: topics, then their findings
 NOTES_LEFT = BOOK_RIGHT + 28
 TOPIC_WIDTH = 124
@@ -113,12 +114,18 @@ SIGNAL_NAMES = {1: ('Mua', UP), 0: ('Trung tính', MUTED), -1: ('Bán', DOWN), N
 # Vietnamese price board colors for prices at the reference and the daily limits
 BAND_COLORS = {'ceiling': '#d24dff', 'reference': '#f5c518', 'floor': '#3ba3ff'}
 
-# Each overlay's chip, which is also its legend: (label, color) pairs
+# Each overlay's and panel's chip, which is also its legend: (label, color) pairs
 CHIPS = (
     ('ma', AVERAGES),
     ('bollinger', (('Bollinger', BANDS),)),
     ('ichimoku', (('Ichimoku', TEXT), ('Tenkan', TENKAN), ('Kijun', KIJUN), ('Chikou', CHIKOU), ('Mây', SPAN_A_LINE))),
     ('fibonacci', (('Fibonacci', FIBONACCI_LINE),)),
+)
+PANEL_CHIPS = (
+    ('rsi', (('RSI', RSI_LINE),)),
+    ('stochastic', (('Stochastic', K_LINE),)),
+    ('stochastic_rsi', (('Stoch RSI', K_LINE),)),
+    ('macd', (('MACD', MACD_LINE),)),
 )
 
 # What each market state means for the prices shown
@@ -136,23 +143,28 @@ TITLE = ('Segoe UI', 14, 'bold')
 BADGE = ('Segoe UI', 10, 'bold')
 
 
-def _load_preferences() -> Tuple[FrozenSet[str], str]:
-    """Returns: the overlays and tab last chosen, or the defaults."""
+def _load_preferences() -> Tuple[FrozenSet[str], FrozenSet[str], str]:
+    """Returns: the overlays, panels, and tab last chosen, each the default where none was saved."""
+    overlays, panels, tab = DEFAULT_OVERLAYS, DEFAULT_PANELS, TABS[0][0]
     try:
         with open(app_data_dir() / PREFERENCES_FILE, encoding='utf-8') as file:
             saved = json.load(file)
         overlays = frozenset(overlay for overlay in saved['overlays'] if overlay in OVERLAYS)
-        tab = saved.get('tab') if saved.get('tab') in dict(TABS) else TABS[0][0]
-        return overlays, tab
+        if 'panels' in saved:
+            panels = frozenset(panel for panel in saved['panels'] if panel in PANELS)
+        if saved.get('tab') in dict(TABS):
+            tab = saved['tab']
     except (OSError, ValueError, KeyError, TypeError, AttributeError):
-        return DEFAULT_OVERLAYS, TABS[0][0]
+        pass
+    return overlays, panels, tab
 
 
-def _save_preferences(overlays: FrozenSet[str], tab: str) -> None:
+def _save_preferences(overlays: FrozenSet[str], panels: FrozenSet[str], tab: str) -> None:
     try:
         path = app_data_dir() / PREFERENCES_FILE
         path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(json.dumps({'overlays': sorted(overlays), 'tab': tab}), encoding='utf-8')
+        path.write_text(json.dumps({'overlays': sorted(overlays), 'panels': sorted(panels), 'tab': tab}),
+                        encoding='utf-8')
     except OSError:
         pass  # the choice just isn't remembered
 
@@ -196,7 +208,7 @@ class AnalysisPopup:
         self._canvas = None
         self._symbol: Optional[str] = None
         self._shown = False
-        self._overlays, self._tab = _load_preferences()
+        self._overlays, self._panels, self._tab = _load_preferences()
         # The widget's (left, top, right, bottom) on screen, its top and bottom
         # being the taskbar's, to place the popup by; and the popup's own
         # (left, top, right, bottom) while shown
@@ -246,8 +258,9 @@ class AnalysisPopup:
         canvas = tk.Canvas(window, width=WIDTH, height=self._height, bg=BACKGROUND,
                            highlightthickness=0, borderwidth=0)
         canvas.pack(fill='both', expand=True)
-        # The overlay chips and the tabs are clickable
+        # The overlay and panel chips and the tabs are clickable
         clickable = [(f'chip-{overlay}', lambda overlay=overlay: self._toggle_overlay(overlay)) for overlay in OVERLAYS]
+        clickable += [(f'chip-{panel}', lambda panel=panel: self._toggle_panel(panel)) for panel in PANELS]
         clickable += [(f'tab-{tab}', lambda tab=tab: self._select_tab(tab)) for tab, _ in TABS]
         for tag, action in clickable:
             canvas.tag_bind(tag, '<Button-1>', lambda _event, action=action: action())
@@ -326,24 +339,29 @@ class AnalysisPopup:
         self._overlays = self._overlays ^ {overlay}
         self._choice_made()
 
+    def _toggle_panel(self, panel: str) -> None:
+        """Shows or hides one of the indicator panels below the chart, remembering the choice."""
+        self._panels = self._panels ^ {panel}
+        self._choice_made()
+
     def _select_tab(self, tab: str) -> None:
         """Switches the analysis column to a tab, remembering the choice."""
         self._tab = tab
         self._choice_made()
 
     def _choice_made(self) -> None:
-        """Saves the overlays and tab chosen, and redraws at once."""
-        _save_preferences(self._overlays, self._tab)
+        """Saves the overlays, panels, and tab chosen, and redraws at once."""
+        _save_preferences(self._overlays, self._panels, self._tab)
         if self._redraw_job is not None:
             self.root.after_cancel(self._redraw_job)
         self._redraw()
 
     def _redraw(self) -> None:
         """
-        Redraws the open popup whenever its quote, order book, matches, or
-        candles have changed, so the chart and the analysis follow the market
-        as it trades, then schedules the next check; closes it instead once
-        the mouse has gone.
+        Redraws the open popup whenever its quote, order book, foreign
+        trading, or candles have changed, so the chart and the analysis
+        follow the market as it trades, then schedules the next check;
+        closes it instead once the mouse has gone.
         """
         self._redraw_job = None
         if not self._shown:
@@ -354,7 +372,7 @@ class AnalysisPopup:
         self._collect_results()
         data, name = self.source.symbol_quote(self._symbol)
         candles = self._candles(self._symbol)
-        drawn_from = (data, name, self._history_version, self._overlays, self._tab)
+        drawn_from = (data, name, self._history_version, self._overlays, self._panels, self._tab)
         if drawn_from != self._drawn:
             self._drawn = drawn_from
             self._draw(data, name, candles)
@@ -434,8 +452,8 @@ class AnalysisPopup:
     def _draw(self, data: StockData, name: str, candles: Union[Candles, Exception, None]) -> None:
         """
         Draws the popup for the current stock: its latest quote, order book,
-        and matches, and its candles brought up to that quote, with their
-        analysis.
+        and foreign trading, and its candles brought up to that quote, with
+        their analysis.
 
         Args:
             data (StockData): The stock's latest data.
@@ -451,7 +469,7 @@ class AnalysisPopup:
 
         price_color = self._draw_header(data, name, format_price, candles)
         self._draw_chips()
-        bottom = max(MONTHS_Y + 8, self._draw_book(data, format_price))
+        bottom = max(self._panel_slots()[1] + 8, self._draw_book(data, format_price))
         message = None
         if isinstance(candles, Candles) and len(candles) >= 2:
             try:
@@ -471,7 +489,7 @@ class AnalysisPopup:
         else:
             message = f"Không tải được lịch sử giá: {candles}"
         if message:
-            canvas.create_text((CHART_LEFT + CHART_RIGHT) // 2, (PRICE_TOP + RSI_BOTTOM) // 2,
+            canvas.create_text((CHART_LEFT + CHART_RIGHT) // 2, (PRICE_TOP + PRICE_BOTTOM) // 2,
                                text=message, fill=MUTED, font=FONT, width=CHART_RIGHT - CHART_LEFT)
 
         height = bottom + 30
@@ -522,32 +540,56 @@ class AnalysisPopup:
 
     def _draw_chips(self) -> None:
         """
-        Draws a chip per overlay above the chart, doubling as its legend:
-        colored while the overlay is shown, dimmed while hidden. Clicking
-        one toggles its overlay (see prepare).
+        Draws a chip per overlay above the chart and per indicator panel
+        below its volume, each doubling as a legend: colored while shown,
+        dimmed while hidden. Clicking one toggles it (see prepare).
+        """
+        right = self._draw_chip_row(CHIPS_TOP, CHIPS, self._overlays)
+        self._canvas.create_text(right, CHIPS_TOP + 9, anchor='w', fill=DIM, font=SMALL, text='bấm để bật/tắt')
+        self._draw_chip_row(PANEL_CHIPS_TOP, PANEL_CHIPS, self._panels)
+
+    def _draw_chip_row(self, top: int, chips, shown: FrozenSet[str]) -> int:
+        """
+        Draws a row of chips from the chart's left edge.
+
+        Returns:
+            int: The x coordinate after the last chip.
         """
         canvas = self._canvas
         x = CHART_LEFT
-        for overlay, legend in CHIPS:
-            shown = overlay in self._overlays
-            tag = f'chip-{overlay}'
+        for key, legend in chips:
+            on = key in shown
+            tag = f'chip-{key}'
             right = x + 8
             for label, color in legend:
-                item = canvas.create_text(right, CHIPS_TOP + 9, anchor='w', font=SMALL, text=label,
-                                          fill=color if shown else DIM, tags=(tag,))
+                item = canvas.create_text(right, top + 9, anchor='w', font=SMALL, text=label,
+                                          fill=color if on else DIM, tags=(tag,))
                 right = canvas.bbox(item)[2] + 6
-            box = canvas.create_rectangle(x, CHIPS_TOP, right + 2, CHIPS_TOP + 18, tags=(tag,),
-                                          fill=CHIP_FILL if shown else BACKGROUND, outline=MUTED if shown else GRID)
+            box = canvas.create_rectangle(x, top, right + 2, top + 18, tags=(tag,),
+                                          fill=CHIP_FILL if on else BACKGROUND, outline=MUTED if on else GRID)
             canvas.tag_lower(box)
             x = right + 10
-        canvas.create_text(x, CHIPS_TOP + 9, anchor='w', fill=DIM, font=SMALL, text='bấm để bật/tắt')
+        return x
+
+    def _panel_slots(self) -> Tuple[List[Tuple[str, int, int]], int]:
+        """
+        Returns:
+            Tuple[List[Tuple[str, int, int]], int]: Where each panel shown
+                goes, as (panel, top, bottom), stacked in PANELS order; and
+                the y coordinate of the month labels below them.
+        """
+        slots, y = [], PANELS_TOP
+        for panel in PANELS:
+            if panel in self._panels:
+                slots.append((panel, y + PANEL_GAP, y + PANEL_GAP + PANEL_HEIGHT))
+                y += PANEL_GAP + PANEL_HEIGHT
+        return slots, y + 14
 
     def _draw_book(self, data: StockData, format_price: Callable[[float], str]) -> int:
         """
         Draws the order book's three best bids and asks, how they weigh
-        against each other, foreign investors' trading and room, the latest
-        active buy and sell, and the latest matches, like the price board
-        shows them.
+        against each other, and foreign investors' trading and room, like
+        the price board shows them.
 
         Returns:
             int: The y coordinate below what was drawn.
@@ -613,43 +655,6 @@ class AnalysisPopup:
         canvas.create_text(right, y, anchor='ne', fill=TEXT, font=SMALL,
                            text=f"{volume_text(data.foreign_room)} cp" if data.foreign_room > 0
                            else 'Hết room' if data.prev_close > 0 else '—')
-        y += 26
-
-        canvas.create_text(left, y, anchor='nw', fill=TEXT, font=BOLD, text='Khớp lệnh')
-        if data.trades:
-            canvas.create_text(right, y + 2, anchor='ne', fill=DIM, font=SMALL, text=f"{len(data.trades)} lệnh gần nhất")
-        y += 22
-        # The latest active buy (a buyer taking an ask) and sell (a seller hitting a bid)
-        for side, label, color in (('B', 'Mua gần nhất', UP), ('S', 'Bán gần nhất', DOWN)):
-            trade = next((trade for trade in data.trades if trade.side == side), None)
-            text = '—' if trade is None else f"{volume_text(trade.volume)} cp · {format_price(trade.price)} · {trade.time}"
-            canvas.create_text(left, y, anchor='nw', fill=color, font=SMALL, text=label)
-            canvas.create_text(right, y, anchor='ne', fill=TEXT, font=SMALL, text=text)
-            y += 16
-        # What the listed matches add up to on each side
-        if data.trades:
-            for side, label in (('B', 'Tổng mua chủ động'), ('S', 'Tổng bán chủ động')):
-                total = sum(trade.volume for trade in data.trades if trade.side == side)
-                canvas.create_text(left, y, anchor='nw', fill=MUTED, font=SMALL, text=label)
-                canvas.create_text(right, y, anchor='ne', fill=MUTED, font=SMALL, text=f"{volume_text(total)} cp")
-                y += 16
-        y += 6
-
-        columns = ((left, 'nw', 'Giờ'), (middle - 4, 'ne', 'Giá'), (right - 30, 'ne', 'KL'), (right, 'ne', 'M/B'))
-        for x, anchor, title in columns:
-            canvas.create_text(x, y, anchor=anchor, fill=MUTED, font=SMALL, text=title)
-        if not data.trades:
-            canvas.create_text(left, y + 18, anchor='nw', fill=DIM, font=SMALL,
-                               text='Chưa có lệnh khớp nào từ khi mở bảng giá' if data.state != 'closed'
-                               else 'Ngoài giờ giao dịch')
-        for trade in data.trades[:TRADE_ROWS]:
-            y += 16
-            side, side_color = {'B': ('M', UP), 'S': ('B', DOWN)}.get(trade.side, ('', MUTED))
-            canvas.create_text(left, y, anchor='nw', fill=MUTED, font=SMALL, text=trade.time)
-            canvas.create_text(middle - 4, y, anchor='ne', fill=self._band_color(data, trade.price), font=SMALL,
-                               text=format_price(trade.price))
-            canvas.create_text(right - 30, y, anchor='ne', fill=TEXT, font=SMALL, text=volume_text(trade.volume))
-            canvas.create_text(right, y, anchor='ne', fill=side_color, font=BOLD, text=side)
         return y + 24
 
     def _draw_chart(self, candles: Candles, analysis: technical.Analysis,
@@ -740,21 +745,29 @@ class AnalysisPopup:
                                     fill=color, outline=color)
         canvas.create_text(CHART_RIGHT + 6, VOLUME_TOP, anchor='nw', fill=MUTED, font=SMALL, text='Khối lượng')
 
-        # The oscillators from 0 to 100, each with its overbought and oversold lines
-        self._draw_oscillator('RSI 14', ((analysis.rsi, RSI_LINE),), (30, 70), RSI_TOP, RSI_BOTTOM, indexes, x_of)
-        self._draw_oscillator('Stochastic 14 3 3', ((analysis.stochastic_k, K_LINE), (analysis.stochastic_d, D_LINE)),
-                              (20, 80), STOCHASTIC_TOP, STOCHASTIC_BOTTOM, indexes, x_of)
-        self._draw_oscillator('Stoch RSI 3 3 14 14',
-                              ((analysis.stochastic_rsi_k, K_LINE), (analysis.stochastic_rsi_d, D_LINE)),
-                              (20, 80), STOCHASTIC_RSI_TOP, STOCHASTIC_RSI_BOTTOM, indexes, x_of)
-        self._draw_macd(analysis, indexes, x_of, body, format_price)
+        # The indicator panels shown: the oscillators from 0 to 100, each with
+        # its overbought and oversold lines, and MACD
+        slots, months_y = self._panel_slots()
+        for panel, top, bottom in slots:
+            if panel == 'rsi':
+                self._draw_oscillator('RSI 14', ((analysis.rsi, RSI_LINE),), (30, 70), top, bottom, indexes, x_of)
+            elif panel == 'stochastic':
+                self._draw_oscillator('Stochastic 14 3 3 · %K %D',
+                                      ((analysis.stochastic_k, K_LINE), (analysis.stochastic_d, D_LINE)),
+                                      (20, 80), top, bottom, indexes, x_of)
+            elif panel == 'stochastic_rsi':
+                self._draw_oscillator('Stoch RSI 3 3 14 14 · %K %D',
+                                      ((analysis.stochastic_rsi_k, K_LINE), (analysis.stochastic_rsi_d, D_LINE)),
+                                      (20, 80), top, bottom, indexes, x_of)
+            else:
+                self._draw_macd(analysis, top, bottom, indexes, x_of, body, format_price)
 
         # A label where each month starts: T6 for June (tháng 6), and so on
         previous = None
         for i in indexes:
             month = time.gmtime(candles.times[i]).tm_mon
             if previous is not None and month != previous:
-                canvas.create_text(x_of(i), MONTHS_Y, fill=MUTED, font=SMALL, text=f"T{month}")
+                canvas.create_text(x_of(i), months_y, fill=MUTED, font=SMALL, text=f"T{month}")
             previous = month
 
     def _draw_oscillator(self, title: str, lines: Sequence[Tuple[technical.Series, str]], levels: Tuple[int, int],
@@ -807,8 +820,8 @@ class AnalysisPopup:
         self._canvas.create_polygon(*[coordinate for x, price in points for coordinate in (x, y_of(price))],
                                     fill=color, outline=color)
 
-    def _draw_macd(self, analysis: technical.Analysis, indexes: range, x_of: Callable[[int], float],
-                   body: float, format_price: Callable[[float], str]) -> None:
+    def _draw_macd(self, analysis: technical.Analysis, top: int, bottom: int, indexes: range,
+                   x_of: Callable[[int], float], body: float, format_price: Callable[[float], str]) -> None:
         """Draws the MACD panel: the histogram around zero, the MACD line, and its signal line."""
         canvas = self._canvas
         histogram = analysis.macd_histogram
@@ -816,11 +829,11 @@ class AnalysisPopup:
                   for i in indexes if series[i] is not None]
         if not values:
             return
-        top, bottom = max(values + [0.0]), min(values + [0.0])
-        span = (top - bottom) or 1
+        highest, lowest = max(values + [0.0]), min(values + [0.0])
+        span = (highest - lowest) or 1
 
         def macd_y(value: float) -> float:
-            return MACD_BOTTOM - (value - bottom) / span * (MACD_BOTTOM - MACD_TOP)
+            return bottom - (value - lowest) / span * (bottom - top)
 
         zero = macd_y(0)
         canvas.create_line(CHART_LEFT, zero, CHART_RIGHT, zero, fill=GRID)
@@ -840,7 +853,7 @@ class AnalysisPopup:
         runs = [('MACD 12 26 9', MUTED)]
         if analysis.macd[-1] is not None and analysis.macd_signal[-1] is not None:
             runs += [(format_price(analysis.macd[-1]), MACD_LINE), (format_price(analysis.macd_signal[-1]), MACD_SIGNAL)]
-        self._draw_runs(CHART_LEFT + 4, MACD_TOP - 2, runs)
+        self._draw_runs(CHART_LEFT + 4, top - 2, runs)
 
     def _draw_runs(self, x: float, y: float, runs: Sequence[Tuple[str, str]]) -> None:
         """Draws (text, color) runs side by side, left to right, over a backdrop hiding the lines beneath."""

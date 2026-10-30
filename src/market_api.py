@@ -1,7 +1,7 @@
 import time
 from dataclasses import dataclass, replace
 from datetime import datetime
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, List, Optional
 from zoneinfo import ZoneInfo
 
 from src import price_history, vn_market, world_market
@@ -42,8 +42,8 @@ class StockData:
     volume: float = 0.0
     # Vietnamese stocks only: the shares foreign investors bought and sold
     # today, what they paid and got for them, and the shares they may still
-    # buy (their room); the order book's three best bids and asks, as
-    # (price, shares), best first; and the latest matches, newest first
+    # buy (their room); and the order book's three best bids and asks, as
+    # (price, shares), best first
     foreign_bought: float = 0.0
     foreign_sold: float = 0.0
     foreign_bought_value: float = 0.0
@@ -51,7 +51,6 @@ class StockData:
     foreign_room: float = 0.0
     bids: vn_market.Levels = ()
     asks: vn_market.Levels = ()
-    trades: Tuple[vn_market.BoardTrade, ...] = ()
     next_open: Optional[datetime] = None
     has_error: bool = False
 
@@ -241,7 +240,6 @@ class MarketAPI:
         matches = self.price_board.streamed_matches(symbols)
         books = self.price_board.streamed_books(symbols)
         foreign_trading = self.price_board.streamed_foreign(symbols)
-        trades = self.price_board.streamed_trades(symbols)
         if self._price_board_due(state, streamed=len(matches) == len(symbols)):
             self._price_board_fetched_at = time.monotonic()
             try:
@@ -298,7 +296,6 @@ class MarketAPI:
                 foreign_room=room,
                 bids=quote.bids if bids is None else bids,
                 asks=quote.asks if asks is None else asks,
-                trades=trades.get(symbol, ()),
                 next_open=next_open,
                 # A streamed match is current even while the board's REST feed is down
                 has_error=self._board_failed and match is None,
