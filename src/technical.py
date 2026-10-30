@@ -6,9 +6,12 @@ from src.price_history import Candles
 # An indicator's value per candle; None until it has enough candles behind it
 Series = List[Optional[float]]
 
-# The ratings, from every signal saying buy to every signal saying sell. The
-# rating and findings are worded in Vietnamese, for the app's users
-STRONG_BUY, BUY, NEUTRAL, SELL, STRONG_SELL = 'Mua mạnh', 'Mua', 'Trung tính', 'Bán', 'Bán mạnh'
+# The ratings, from every signal saying buy to every signal saying sell.
+# They're named for the trend they describe rather than as advice: the
+# signals mostly follow the price, so they tell where it has been heading,
+# not where it will go. The rating and findings are worded in Vietnamese,
+# for the app's users
+STRONG_UPTREND, UPTREND, SIDEWAYS, DOWNTREND, STRONG_DOWNTREND = 'Tăng mạnh', 'Tăng', 'Đi ngang', 'Giảm', 'Giảm mạnh'
 
 # The moving averages the rating compares the price with, simple and
 # exponential, as TradingView's technical rating does (alongside a 20-day
@@ -65,11 +68,36 @@ class Fibonacci:
 
 
 @dataclass
+class TradePlan:
+    """
+    Reference levels for the two classic ways into a stock, worked out from
+    its support and resistance and how far it moves in a day on average
+    (ATR). They describe the chart, not advice.
+    """
+
+    # Buying a pullback: a zone just above the nearest support, a stop one
+    # ATR below that support, and targets at the levels above the price, at
+    # least one ATR above the zone; None without a support below the price
+    pullback_zone: Optional[Tuple[float, float]]
+    pullback_stop: Optional[float]
+    pullback_targets: List[float]
+    # Buying a breakout: a close above the nearest resistance on more volume
+    # than usual, a stop one ATR below it, and targets at the levels beyond;
+    # None without a resistance above the price
+    breakout_trigger: Optional[float]
+    breakout_stop: Optional[float]
+    breakout_targets: List[float]
+    # Which the trend favors: 'pullback' in an uptrend, 'breakout' in a
+    # downtrend, 'range' while it goes sideways
+    favored: str
+
+
+@dataclass
 class Analysis:
     """A technical read of one symbol's daily candles."""
 
-    # STRONG_BUY, BUY, NEUTRAL, SELL, or STRONG_SELL, from a score between
-    # -1 (every signal says sell) and 1 (every signal says buy)
+    # STRONG_UPTREND, UPTREND, SIDEWAYS, DOWNTREND, or STRONG_DOWNTREND, from
+    # a score between -1 (every signal says sell) and 1 (every signal says buy)
     rating: str
     score: float
     # (buy, neutral, sell) signal counts from the moving averages and the oscillators
@@ -102,6 +130,7 @@ class Analysis:
     # rows, the signal 1 for buy, -1 sell, 0 neutral, None without data
     oscillator_table: List[Tuple[str, str, Optional[int]]]
     average_table: List[Tuple[str, str, Optional[int]]]
+    plan: Optional[TradePlan]
 
 
 def sma(values: Sequence[float], period: int) -> Series:
@@ -530,7 +559,7 @@ def support_resistance(candles: Candles, price: float, window: int = 5, lookback
 
 def analyze(candles: Candles, format_price: Callable[[float], str],
             foreign: Optional[Tuple[float, float, float, float, float]] = None,
-            session_open: bool = False) -> Analysis:
+            session_open: bool = False, tick: Callable[[float], float] = lambda price: price) -> Analysis:
     """
     Reads daily candles the way a technical analyst would: trend, the
     Ichimoku cloud, trend strength, momentum, volatility, volume, candlestick
@@ -546,9 +575,11 @@ def analyze(candles: Candles, format_price: Callable[[float], str],
             today, the shares they may still buy (the foreign room), and
             what they paid and got for the shares (VND, 0 if unknown).
         session_open (bool): Whether the last candle is still forming.
+        tick (Callable[[float], float]): Rounds a price to one the exchange
+            accepts, for the trade plan's levels.
 
     Returns:
-        Analysis: The rating, notes, and chart series.
+        Analysis: The rating, notes, chart series, and trade plan.
     """
     closes = candles.closes
     price = closes[-1]
@@ -610,6 +641,16 @@ def analyze(candles: Candles, format_price: Callable[[float], str],
     rating, score = _rating([vote for _, _, vote in average_table if vote is not None],
                             [vote for _, _, vote in oscillator_table if vote is not None])
 
+    # The levels the price tends to stall at, beyond the swings' turns: the
+    # slower averages, the cloud's edges, the base line, the Fibonacci
+    # retracements, and the 52-week high
+    last = len(closes) - 1
+    landmarks = [level for level in (sma50[-1], sma200[-1], kijun[-1], span_a[last], span_b[last],
+                                     max(candles.highs[-250:])) if level is not None]
+    if swing is not None:
+        landmarks += [level for _, level in swing.levels]
+    plan = _trade_plan(price, rating, *support_resistance(candles, price), atr(candles)[-1], landmarks, tick)
+
     notes = [(topic, text) for topic, text in (
         ('Xu hướng', _trend_note(price, sma20, sma50, sma200)),
         ('Ichimoku', _ichimoku_note(candles, tenkan, kijun, span_a, span_b, format_price)),
@@ -650,7 +691,61 @@ def analyze(candles: Candles, format_price: Callable[[float], str],
         fibonacci=swing,
         oscillator_table=oscillator_table,
         average_table=average_table,
+        plan=plan,
     )
+
+
+def _trade_plan(price: float, rating: str, supports: List[float], resistances: List[float],
+                average_range: Optional[float], landmarks: List[float],
+                tick: Callable[[float], float]) -> Optional[TradePlan]:
+    """
+    Works out the pullback and breakout scenarios (see TradePlan).
+
+    Args:
+        price (float): The latest price.
+        rating (str): The trend reading, which decides the scenario favored.
+        supports (List[float]): Support levels below the price, nearest first.
+        resistances (List[float]): Resistance levels above it, nearest first.
+        average_range (Optional[float]): The average true range, or None
+            without enough candles.
+        landmarks (List[float]): Other levels the price tends to stall at.
+        tick (Callable[[float], float]): Rounds a price to one the exchange accepts.
+
+    Returns:
+        Optional[TradePlan]: The plan, or None without an average range.
+    """
+    if average_range is None or average_range <= 0:
+        return None
+
+    def targets(entry: float, beyond: float) -> List[float]:
+        """
+        Two levels at least an ATR above the entry and above `beyond`, 1%
+        apart, the nearest first; steps of ATR above that where there are none.
+        """
+        lowest = max(entry + average_range, beyond)
+        found: List[float] = []
+        for level in sorted(level for level in resistances + landmarks if level >= lowest):
+            if not found or level > found[-1] * 1.01:
+                found.append(level)
+        found += [lowest + steps * average_range for steps in (1, 2)]
+        return [tick(level) for level in found[:2]]
+
+    pullback_zone, pullback_stop, pullback_targets = None, None, []
+    if supports:
+        low, high = tick(supports[0]), tick(supports[0] + average_range / 4)
+        pullback_zone = (low, max(low, high))
+        pullback_stop = tick(supports[0] - average_range)
+        # A pullback's targets lie above where the price is now, not just above the entry
+        pullback_targets = targets(sum(pullback_zone) / 2, price)
+    breakout_trigger, breakout_stop, breakout_targets = None, None, []
+    if resistances:
+        breakout_trigger = tick(resistances[0])
+        breakout_stop = tick(breakout_trigger - average_range)
+        breakout_targets = targets(breakout_trigger, breakout_trigger)
+    favored = ('pullback' if rating in (STRONG_UPTREND, UPTREND)
+               else 'breakout' if rating in (DOWNTREND, STRONG_DOWNTREND) else 'range')
+    return TradePlan(pullback_zone, pullback_stop, pullback_targets,
+                     breakout_trigger, breakout_stop, breakout_targets, favored)
 
 
 def _vote(buy: bool, sell: bool) -> Optional[int]:
@@ -729,17 +824,17 @@ def _rating(average_votes: List[int], oscillator_votes: List[int]) -> Tuple[str,
     """Averages the two groups' net votes into a rating and its score."""
     groups = [votes for votes in (average_votes, oscillator_votes) if votes]
     if not groups:
-        return NEUTRAL, 0.0
+        return SIDEWAYS, 0.0
     score = sum(sum(votes) / len(votes) for votes in groups) / len(groups)
     if score > 0.5:
-        return STRONG_BUY, score
+        return STRONG_UPTREND, score
     if score > 0.1:
-        return BUY, score
+        return UPTREND, score
     if score >= -0.1:
-        return NEUTRAL, score
+        return SIDEWAYS, score
     if score >= -0.5:
-        return SELL, score
-    return STRONG_SELL, score
+        return DOWNTREND, score
+    return STRONG_DOWNTREND, score
 
 
 def _tally(votes: List[int]) -> Tuple[int, int, int]:

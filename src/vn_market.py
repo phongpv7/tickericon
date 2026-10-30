@@ -105,6 +105,24 @@ def is_vn_symbol(symbol: str) -> bool:
     return symbol.upper().endswith(VN_SUFFIX)
 
 
+def round_to_tick(price: float, exchange: str) -> float:
+    """
+    Args:
+        price (float): A price in VND.
+        exchange (str): The stock's exchange: 'HOSE', 'HNX', or 'UPCoM'.
+
+    Returns:
+        float: The nearest price an order can be placed at: HOSE moves in
+            steps of 10 VND below 10,000, 50 below 50,000, and 100 above;
+            HNX and UPCoM in steps of 100.
+    """
+    if exchange == 'HOSE':
+        step = 10 if price < 10_000 else 50 if price < 50_000 else 100
+    else:
+        step = 100
+    return round(price / step) * step
+
+
 def vn_symbol(code: str) -> str:
     """
     Args:

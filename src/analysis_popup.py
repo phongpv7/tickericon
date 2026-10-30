@@ -15,6 +15,7 @@ from src import technical
 from src.app_identity import app_data_dir
 from src.market_api import StockData
 from src.price_history import HISTORY_DAYS, RECENT_DAYS, Candles, merge_candles, with_live_price
+from src.vn_market import round_to_tick
 
 if sys.platform == 'win32':
     from ctypes import wintypes
@@ -107,10 +108,11 @@ SPAN_A_LINE, SPAN_B_LINE = '#3f9a6b', '#a8505c'
 FIBONACCI_LINE = '#c9a94e'
 MACD_LINE, MACD_SIGNAL = K_LINE, D_LINE
 RATING_COLORS = {
-    technical.STRONG_BUY: '#1f9d55', technical.BUY: '#26a65b', technical.NEUTRAL: '#6b6b6b',
-    technical.SELL: '#e5484d', technical.STRONG_SELL: '#c53030',
+    technical.STRONG_UPTREND: '#1f9d55', technical.UPTREND: '#26a65b', technical.SIDEWAYS: '#6b6b6b',
+    technical.DOWNTREND: '#e5484d', technical.STRONG_DOWNTREND: '#c53030',
 }
-SIGNAL_NAMES = {1: ('Mua', UP), 0: ('Trung tính', MUTED), -1: ('Bán', DOWN), None: ('—', DIM)}
+# Each indicator's signal, worded as what it reads rather than as advice to buy or sell
+SIGNAL_NAMES = {1: ('Tích cực', UP), 0: ('Trung tính', MUTED), -1: ('Tiêu cực', DOWN), None: ('—', DIM)}
 # Vietnamese price board colors for prices at the reference and the daily limits
 BAND_COLORS = {'ceiling': '#d24dff', 'reference': '#f5c518', 'floor': '#3ba3ff'}
 
@@ -469,7 +471,8 @@ class AnalysisPopup:
 
         price_color = self._draw_header(data, name, format_price, candles)
         self._draw_chips()
-        bottom = max(self._panel_slots()[1] + 8, self._draw_book(data, format_price))
+        book_bottom = self._draw_book(data, format_price)
+        bottom = max(self._panel_slots()[1] + 8, book_bottom)
         message = None
         if isinstance(candles, Candles) and len(candles) >= 2:
             try:
@@ -477,9 +480,11 @@ class AnalysisPopup:
                 foreign = (data.foreign_bought, data.foreign_sold, data.foreign_room,
                            data.foreign_bought_value, data.foreign_sold_value)
                 analysis = technical.analyze(candles, format_price, foreign=foreign if any(foreign) else None,
-                                             session_open=data.state != 'closed')
+                                             session_open=data.state != 'closed',
+                                             tick=lambda price: round_to_tick(price, data.exchange))
                 self._draw_chart(candles, analysis, format_price, price_color)
-                bottom = max(bottom, self._draw_analysis(analysis))
+                bottom = max(bottom, self._draw_analysis(analysis),
+                             self._draw_plan(data, analysis.plan, format_price, book_bottom))
             except Exception as exc:  # odd data must not stop the redraws
                 canvas.delete('all')
                 self._draw_header(data, name, format_price, candles)
@@ -656,6 +661,91 @@ class AnalysisPopup:
                            text=f"{volume_text(data.foreign_room)} cp" if data.foreign_room > 0
                            else 'Hết room' if data.prev_close > 0 else '—')
         return y + 24
+
+    def _draw_plan(self, data: StockData, plan: Optional[technical.TradePlan],
+                   format_price: Callable[[float], str], y: int) -> int:
+        """
+        Draws the reference plan below the order book: the pullback and
+        breakout scenarios with their levels, how their targets weigh
+        against their stops, and where the price stands against each now.
+
+        Returns:
+            int: The y coordinate below what was drawn.
+        """
+        canvas = self._canvas
+        left, right = BOOK_LEFT, BOOK_RIGHT
+        canvas.create_text(left, y, anchor='nw', fill=TEXT, font=BOLD, text='Kế hoạch tham khảo')
+        y += 20
+        if plan is None:
+            canvas.create_text(left, y, anchor='nw', fill=DIM, font=SMALL, text='Chưa đủ dữ liệu để tính.')
+            return y + 20
+
+        def text(value: str, color: str = MUTED, font=SMALL, indent: int = 0) -> None:
+            nonlocal y
+            item = canvas.create_text(left + indent, y, anchor='nw', fill=color, font=font, text=value,
+                                      width=right - left - indent)
+            y = canvas.bbox(item)[3] + 2
+
+        def row(label: str, value: str, color: str = TEXT) -> None:
+            nonlocal y
+            canvas.create_text(left + 8, y, anchor='nw', fill=MUTED, font=SMALL, text=label)
+            canvas.create_text(right, y, anchor='ne', fill=color, font=SMALL, text=value)
+            y += 15
+
+        def change(level: float, entry: float) -> str:
+            return f"{format_price(level)} ({(level / entry - 1) * 100:+.1f}%)"
+
+        def reward_risk(entry: float, stop: float, targets) -> str:
+            risk = entry - stop
+            return ' · '.join(f"{(target - entry) / risk:.1f}" for target in targets) + ' lần' if risk > 0 else '—'
+
+        text({'pullback': 'Xu hướng tăng: hợp với mua khi giá về hỗ trợ (KB1).',
+              'breakout': 'Xu hướng giảm: nên chờ xác nhận (KB2), tránh bắt đáy.',
+              'range': 'Đi ngang: mua gần hỗ trợ, chốt lời gần kháng cự.'}[plan.favored])
+        price = data.price
+
+        y += 6
+        favored = plan.favored != 'breakout'
+        text('KB1 · Mua khi về hỗ trợ' + (' · ưu tiên' if favored else ''), TEXT if favored else MUTED, BOLD)
+        if plan.pullback_zone is None:
+            text('Chưa có hỗ trợ rõ phía dưới: giá đang ở vùng đáy.', DIM, indent=8)
+        else:
+            low, high = plan.pullback_zone
+            entry = (low + high) / 2
+            row('Vùng mua', f"{format_price(low)} – {format_price(high)}")
+            row('Cắt lỗ', change(plan.pullback_stop, entry), DOWN)
+            row('Chốt lời', ' · '.join(format_price(target) for target in plan.pullback_targets), UP)
+            row('Lời / lỗ', reward_risk(entry, plan.pullback_stop, plan.pullback_targets))
+            if price < plan.pullback_stop:
+                text('Giá đã thủng điểm cắt lỗ.', DOWN, indent=8)
+            elif price < low:
+                text('Giá dưới vùng mua, sát điểm cắt lỗ.', DOWN, indent=8)
+            elif price <= high:
+                text('Giá đang trong vùng mua.', UP, indent=8)
+            else:
+                text(f"Chờ giá về vùng mua (cần giảm {(1 - high / price) * 100:.1f}%).", indent=8)
+
+        y += 6
+        favored = plan.favored == 'breakout'
+        text('KB2 · Chờ xác nhận' + (' · ưu tiên' if favored else ''), TEXT if favored else MUTED, BOLD)
+        if plan.breakout_trigger is None:
+            text('Chưa có kháng cự rõ phía trên: giá đang ở vùng đỉnh.', DIM, indent=8)
+        else:
+            trigger = plan.breakout_trigger
+            row('Mua khi đóng cửa trên', format_price(trigger))
+            row('Cắt lỗ', change(plan.breakout_stop, trigger), DOWN)
+            row('Chốt lời', ' · '.join(format_price(target) for target in plan.breakout_targets), UP)
+            row('Lời / lỗ', reward_risk(trigger, plan.breakout_stop, plan.breakout_targets))
+            if price < trigger:
+                text(f"Chờ đóng cửa trên {format_price(trigger)}, KL trên TB 20 phiên "
+                     f"(cần tăng {(trigger / price - 1) * 100:.1f}%).", indent=8)
+            elif data.state == 'closed':
+                text('Đã đóng cửa trên ngưỡng: kịch bản được kích hoạt.', UP, indent=8)
+            else:
+                text('Giá đang trên ngưỡng, chờ đóng cửa xác nhận.', UP, indent=8)
+        y += 6
+        text('Mốc kỹ thuật để tham khảo, không phải khuyến nghị mua bán.', DIM)
+        return y + 6
 
     def _draw_chart(self, candles: Candles, analysis: technical.Analysis,
                     format_price: Callable[[float], str], price_color: str) -> None:
@@ -888,11 +978,11 @@ class AnalysisPopup:
         color = RATING_COLORS[analysis.rating]
         canvas.create_rectangle(x, y, x + 132, y + 32, fill=color, outline=color)
         canvas.create_text(x + 66, y + 16, fill='white', font=BADGE, text=analysis.rating.upper())
-        canvas.create_text(x + 146, y - 1, anchor='nw', fill=MUTED, font=SMALL, text='Đánh giá kỹ thuật (khung ngày)')
-        for row, (group, (buy, neutral, sell)) in enumerate((('Đường trung bình', analysis.average_signals),
-                                                              ('Chỉ báo dao động', analysis.oscillator_signals))):
+        canvas.create_text(x + 146, y - 1, anchor='nw', fill=MUTED, font=SMALL, text='Xu hướng kỹ thuật (khung ngày)')
+        for row, (group, (positive, neutral, negative)) in enumerate((('Đường trung bình', analysis.average_signals),
+                                                                      ('Chỉ báo dao động', analysis.oscillator_signals))):
             canvas.create_text(x + 146, y + 12 + row * 12, anchor='nw', fill=TEXT, font=SMALL,
-                               text=f"{group}: {buy} mua, {neutral} trung tính, {sell} bán")
+                               text=f"{group}: {positive} tích cực, {neutral} trung tính, {negative} tiêu cực")
 
         # The tabs, the chosen one underlined
         y += 44
