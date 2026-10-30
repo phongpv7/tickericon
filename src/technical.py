@@ -1010,7 +1010,10 @@ def _volume_note(candles: Candles, mfi14: Series) -> Optional[str]:
     if average <= 0:
         return None
     ratio = volumes[-1] / average
-    text = f"Hôm nay {compact(volumes[-1])}, bằng {ratio:.1f} lần trung bình 20 phiên"
+    difference = (ratio - 1) * 100
+    text = (f"Hôm nay {compact(volumes[-1])}, "
+            + (f"{'cao' if difference > 0 else 'thấp'} hơn {abs(difference):.0f}% so với" if round(difference)
+               else 'ngang') + ' trung bình 20 phiên')
     if ratio >= 1.5 and closes[-1] != closes[-2]:
         text += ', lực mua mạnh' if closes[-1] > closes[-2] else ', lực bán mạnh'
     text += '.'

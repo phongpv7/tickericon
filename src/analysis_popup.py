@@ -636,11 +636,9 @@ class AnalysisPopup:
             canvas.create_text(left, y + 10, anchor='nw', fill=UP, font=SMALL, text=f"Dư mua {volume_text(bid_total)}")
             canvas.create_text(right, y + 10, anchor='ne', fill=DOWN, font=SMALL,
                                text=f"Dư bán {volume_text(ask_total)}")
-            if bid_total and ask_total:
-                more, fewer = ('mua', 'bán') if bid_total >= ask_total else ('bán', 'mua')
-                canvas.create_text(left, y + 25, anchor='nw', fill=MUTED, font=SMALL,
-                                   text=f"Dư {more} gấp {max(bid_total, ask_total) / min(bid_total, ask_total):.1f} "
-                                        f"lần dư {fewer}")
+            share = bid_total / (bid_total + ask_total) * 100
+            canvas.create_text(left, y + 25, anchor='nw', fill=MUTED, font=SMALL,
+                               text=f"Dư mua {share:.0f}% · Dư bán {100 - share:.0f}%")
         y += 50
 
         # Foreign investors' trading today and the room they have left, like the board's foreign columns
@@ -693,11 +691,8 @@ class AnalysisPopup:
             y += 15
 
         def change(level: float, entry: float) -> str:
+            """A level, with how far it is from the entry, e.g. '64.9 (+4.0%)'."""
             return f"{format_price(level)} ({(level / entry - 1) * 100:+.1f}%)"
-
-        def reward_risk(entry: float, stop: float, targets) -> str:
-            risk = entry - stop
-            return ' · '.join(f"{(target - entry) / risk:.1f}" for target in targets) + ' lần' if risk > 0 else '—'
 
         text({'pullback': 'Xu hướng tăng: hợp với mua khi giá về hỗ trợ (KB1).',
               'breakout': 'Xu hướng giảm: nên chờ xác nhận (KB2), tránh bắt đáy.',
@@ -714,8 +709,7 @@ class AnalysisPopup:
             entry = (low + high) / 2
             row('Vùng mua', f"{format_price(low)} – {format_price(high)}")
             row('Cắt lỗ', change(plan.pullback_stop, entry), DOWN)
-            row('Chốt lời', ' · '.join(format_price(target) for target in plan.pullback_targets), UP)
-            row('Lời / lỗ', reward_risk(entry, plan.pullback_stop, plan.pullback_targets))
+            row('Chốt lời', ' · '.join(change(target, entry) for target in plan.pullback_targets), UP)
             if price < plan.pullback_stop:
                 text('Giá đã thủng điểm cắt lỗ.', DOWN, indent=8)
             elif price < low:
@@ -734,8 +728,7 @@ class AnalysisPopup:
             trigger = plan.breakout_trigger
             row('Mua khi đóng cửa trên', format_price(trigger))
             row('Cắt lỗ', change(plan.breakout_stop, trigger), DOWN)
-            row('Chốt lời', ' · '.join(format_price(target) for target in plan.breakout_targets), UP)
-            row('Lời / lỗ', reward_risk(trigger, plan.breakout_stop, plan.breakout_targets))
+            row('Chốt lời', ' · '.join(change(target, trigger) for target in plan.breakout_targets), UP)
             if price < trigger:
                 text(f"Chờ đóng cửa trên {format_price(trigger)}, KL trên TB 20 phiên "
                      f"(cần tăng {(trigger / price - 1) * 100:.1f}%).", indent=8)
